@@ -1,0 +1,25 @@
+[package]
+name = "cortex-r5-sample"
+version = "0.1.0"
+edition = "2021"
+authors = ["National Cheng Kung University"]
+license = "MIT"
+description = "A basic Armv7-R demonstration application running ThreadX on QEMU"
+
+[dependencies]
+embedded-alloc = "0.6.0"
+static_cell = "2.1.0"
+threadx-sys = { path = "../threadx-sys" }
+byte-strings = "0.3.1"
+
+[build-dependencies]
+cc = "1.2.1"
+
+[profile.release]
+codegen-units = 1
+debug = 2
+debug-assertions = true
+incremental = false
+lto = false
+opt-level = 1
+overflow-checks = true
