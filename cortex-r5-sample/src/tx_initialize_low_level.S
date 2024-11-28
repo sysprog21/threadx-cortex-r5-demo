@@ -7,28 +7,6 @@
 @ * 
 @ * SPDX-License-Identifier: MIT
 @ **************************************************************************/
-@
-@
-@/**************************************************************************/
-@/**************************************************************************/
-@/**                                                                       */ 
-@/** ThreadX Component                                                     */ 
-@/**                                                                       */
-@/**   Initialize                                                          */
-@/**                                                                       */
-@/**************************************************************************/
-@/**************************************************************************/
-@
-@
-@#define TX_SOURCE_CODE
-@
-@
-@/* Include necessary system files.  */
-@
-@#include "tx_api.h"
-@#include "tx_initialize.h"
-@#include "tx_thread.h"
-@#include "tx_timer.h"
 
     .arm
 
@@ -39,8 +17,7 @@ SYS_MODE        =       0xDF                    @ Disable IRQ/FIQ SYS mode
 FIQ_STACK_SIZE  =       512                     @ FIQ stack size
 IRQ_STACK_SIZE  =       1024                    @ IRQ stack size
 SYS_STACK_SIZE  =       1024                    @ System stack size
-@
-@
+
     .global     _tx_thread_system_stack_ptr
     .global     _tx_initialize_unused_memory
     .global     _tx_thread_context_save
@@ -50,11 +27,9 @@ SYS_STACK_SIZE  =       1024                    @ System stack size
     .global     _sp
     .global     _stack_bottom
 
-@
-@
 @/* Define the 16-bit Thumb mode veneer for _tx_initialize_low_level for
-@   applications calling this function from to 16-bit Thumb mode.  */
-@
+@ * applications calling this function from to 16-bit Thumb mode.
+@ */
     .text
     .align 2
     .thumb
@@ -69,21 +44,8 @@ $_tx_initialize_low_level:
      LDMFD     sp!, {lr}                        @ Recover saved return address
      BX        lr                               @ Return to 16-bit caller
 @
-@
     .text
     .align 2
-@/**************************************************************************/ 
-@/*                                                                        */ 
-@/*  FUNCTION                                               RELEASE        */ 
-@/*                                                                        */ 
-@/*    _tx_initialize_low_level                          Cortex-R5/GNU     */ 
-@/*                                                           6.1          */
-@/*  AUTHOR                                                                */
-@/*                                                                        */
-@/*    William E. Lamie, Microsoft Corporation                             */
-@/*                                                                        */
-@/*  DESCRIPTION                                                           */
-@/*                                                                        */ 
 @/*    This function is responsible for any low-level processor            */ 
 @/*    initialization, including setting up interrupt vectors, setting     */ 
 @/*    up a periodic timer interrupt source, saving the system stack       */ 
@@ -105,14 +67,7 @@ $_tx_initialize_low_level:
 @/*  CALLED BY                                                             */ 
 @/*                                                                        */ 
 @/*    _tx_initialize_kernel_enter           ThreadX entry function        */ 
-@/*                                                                        */ 
-@/*  RELEASE HISTORY                                                       */ 
-@/*                                                                        */ 
-@/*    DATE              NAME                      DESCRIPTION             */
-@/*                                                                        */
-@/*  09-30-2020     William E. Lamie         Initial Version 6.1           */
-@/*                                                                        */
-@/**************************************************************************/
+@
 @VOID   _tx_initialize_low_level(VOID)
 @{
     .global _tx_initialize_low_level
@@ -126,7 +81,6 @@ _tx_initialize_low_level:
     LDR     r1, =_sp                            @ Get pointer to stack area
 
 #ifdef TX_ENABLE_IRQ_NESTING 
-@
 @    /* Setup the system mode stack for nested interrupt support  */
 @
     LDR     r2, =SYS_STACK_SIZE                 @ Pickup stack size
@@ -184,7 +138,6 @@ _stack_error_loop:
 #endif
 @}
 @
-@
 @/* Define shells for each of the interrupt vectors.  */
 @
     .global __tx_undefined
@@ -235,7 +188,6 @@ __tx_irq_processing_return:
     /* Use Rust to handle the interrupt */
     BL     handle_interrupt
 @
-@
 @    /* If interrupt nesting was started earlier, the end of interrupt nesting
 @       service must be called before returning to _tx_thread_context_restore.  
 @       This routine returns in processing in IRQ mode with interrupts disabled.  */
@@ -245,7 +197,6 @@ __tx_irq_processing_return:
 @
 @    /* Jump to context restore to restore system context.  */
     B       _tx_thread_context_restore
-@
 @
 @    /* This is an example of a vectored IRQ handler.  */
 @
@@ -269,7 +220,6 @@ __tx_irq_processing_return:
 @       small code sequences where lr is saved before enabling interrupts and 
 @       restored after interrupts are again disabled.  */
 @
-@
 @    /* Interrupt nesting is allowed after calling _tx_thread_irq_nesting_start 
 @       from IRQ mode with interrupts disabled.  This routine switches to the
 @       system mode and returns with IRQ interrupts enabled.  
@@ -291,7 +241,6 @@ __tx_irq_processing_return:
 @
 @    /* Jump to context restore to restore system context.  */
 @    B       _tx_thread_context_restore
-@
 @
 #ifdef TX_ENABLE_FIQ_SUPPORT
     .global  __tx_fiq_handler
@@ -333,11 +282,7 @@ __tx_fiq_handler:
     B       __tx_fiq_handler                    @ FIQ interrupt handler
 #endif
 @
-@
 BUILD_OPTIONS:
     .word  _tx_build_options                    @ Reference to bring in
 VERSION_ID:
     .word  _tx_version_id                       @ Reference to bring in
-
-
-
