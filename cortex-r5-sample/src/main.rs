@@ -12,6 +12,53 @@ use cortex_r5_sample::{
 };
 use static_cell::StaticCell;
 
+/// ThreadX critical section implementation for single-core systems.
+///
+/// # Safety
+/// This implementation disables local interrupts via ThreadX interrupt control.
+/// It provides mutual exclusion ONLY on single-core systems. The save/restore
+/// pattern properly handles nested critical sections.
+///
+/// ## Limitations
+/// - **Single-Core Only**: Do not use with ThreadX SMP - interrupt disabling
+///   only affects the local core and does not prevent other cores from accessing
+///   protected data.
+/// - **No Blocking APIs**: Never call ThreadX blocking APIs (mutex, semaphore,
+///   queue with wait) inside a critical section - this will deadlock the system.
+/// - **Short Duration Only**: Keep critical sections extremely short (< 10 μs)
+///   to avoid interrupt latency spikes and scheduler starvation.
+/// - **ISR Compatible**: Safe to call from both thread and interrupt context.
+///
+/// ## Integration Warning
+/// The existing `GlobalUart` uses a ThreadX mutex. Do NOT call UART logging
+/// functions from inside critical sections - use a non-blocking ring buffer
+/// pattern for defmt/logging integration.
+struct ThreadXCriticalSection;
+critical_section::set_impl!(ThreadXCriticalSection);
+
+unsafe impl critical_section::Impl for ThreadXCriticalSection {
+    unsafe fn acquire() -> critical_section::RawRestoreState {
+        // Disable interrupts and get previous state
+        let state = threadx_sys::_tx_thread_interrupt_control(threadx_sys::TX_INT_DISABLE);
+
+        // Compiler fence prevents reordering of memory operations across the
+        // critical section boundary. Acquire semantics ensure all loads/stores
+        // after this fence observe the effects of the critical section entry.
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::Acquire);
+
+        state
+    }
+    unsafe fn release(restore_state: critical_section::RawRestoreState) {
+        // Compiler fence prevents reordering of memory operations across the
+        // critical section boundary. Release semantics ensure all loads/stores
+        // within the critical section complete before the fence.
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::Release);
+
+        // Restore previous interrupt state (preserves nesting depth)
+        threadx_sys::_tx_thread_interrupt_control(restore_state);
+    }
+}
+
 const DEMO_STACK_SIZE: usize = 16384;
 const DEMO_POOL_SIZE: usize = (DEMO_STACK_SIZE * 2) + 16384;
 
