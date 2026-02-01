@@ -2,6 +2,7 @@
 
 #![no_std]
 
+pub mod exception;
 pub mod pl011_uart;
 pub mod pl190_vic;
 pub mod sp804_timer;

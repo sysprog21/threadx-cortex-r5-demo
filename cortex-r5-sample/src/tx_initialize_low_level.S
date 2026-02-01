@@ -13,9 +13,13 @@
 SVC_MODE        =       0xD3                    @ Disable IRQ/FIQ SVC mode
 IRQ_MODE        =       0xD2                    @ Disable IRQ/FIQ IRQ mode
 FIQ_MODE        =       0xD1                    @ Disable IRQ/FIQ FIQ mode
+ABT_MODE        =       0xD7                    @ Disable IRQ/FIQ ABT mode
+UND_MODE        =       0xDB                    @ Disable IRQ/FIQ UND mode
 SYS_MODE        =       0xDF                    @ Disable IRQ/FIQ SYS mode
 FIQ_STACK_SIZE  =       512                     @ FIQ stack size
 IRQ_STACK_SIZE  =       1024                    @ IRQ stack size
+ABT_STACK_SIZE  =       512                     @ Abort stack size
+UND_STACK_SIZE  =       512                     @ Undefined stack size
 SYS_STACK_SIZE  =       1024                    @ System stack size
 
     .global     _tx_thread_system_stack_ptr
@@ -105,7 +109,21 @@ _tx_initialize_low_level:
     SUB     r1, r1, #1                          @ Backup 1 byte
     BIC     r1, r1, #7                          @ Ensure 8-byte alignment
     MOV     sp, r1                              @ Setup IRQ stack pointer
-    SUB     r3, r1, r2                          @ Calculate end of IRQ stack
+    SUB     r1, r1, r2                          @ Calculate start of next stack
+    LDR     r2, =ABT_STACK_SIZE                 @ Pickup ABT stack size
+    MOV     r0, #ABT_MODE                       @ Build ABT mode CPSR
+    MSR     CPSR, r0                            @ Enter ABT mode
+    SUB     r1, r1, #1                          @ Backup 1 byte
+    BIC     r1, r1, #7                          @ Ensure 8-byte alignment
+    MOV     sp, r1                              @ Setup ABT stack pointer
+    SUB     r1, r1, r2                          @ Calculate start of next stack
+    LDR     r2, =UND_STACK_SIZE                 @ Pickup UND stack size
+    MOV     r0, #UND_MODE                       @ Build UND mode CPSR
+    MSR     CPSR, r0                            @ Enter UND mode
+    SUB     r1, r1, #1                          @ Backup 1 byte
+    BIC     r1, r1, #7                          @ Ensure 8-byte alignment
+    MOV     sp, r1                              @ Setup UND stack pointer
+    SUB     r3, r1, r2                          @ Calculate end of UND stack
     MOV     r0, #SVC_MODE                       @ Build SVC mode CPSR
     MSR     CPSR, r0                            @ Enter SVC mode
     LDR     r2, =_stack_bottom                  @ Pickup stack bottom
@@ -142,7 +160,8 @@ _stack_error_loop:
 @
     .global __tx_undefined
 __tx_undefined:
-    B       __tx_undefined                      @ Undefined handler
+    SUB     r0, lr, #4                          @ Adjust PC for Undef (ARM mode)
+    B       undefined_handler                   @ Undefined handler (Rust)
 @
     .global __tx_swi_interrupt
 __tx_swi_interrupt:
@@ -150,11 +169,13 @@ __tx_swi_interrupt:
 @
     .global __tx_prefetch_handler
 __tx_prefetch_handler:
-    B       __tx_prefetch_handler               @ Prefetch exception handler
+    SUB     r0, lr, #4                          @ Adjust PC for Prefetch Abort
+    B       prefetch_abort_handler              @ Prefetch exception handler (Rust)
 @
     .global __tx_abort_handler
 __tx_abort_handler:
-    B       __tx_abort_handler                  @ Abort exception handler
+    SUB     r0, lr, #8                          @ Adjust PC for Data Abort
+    B       data_abort_handler                  @ Abort exception handler (Rust)
 @
     .global __tx_reserved_handler
 __tx_reserved_handler:
