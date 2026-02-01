@@ -227,6 +227,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .include(&tx_port_inc)
         .flag("-g")
         .define("TX_ENABLE_VFP_SUPPORT", "1")
+        .define("TX_ENABLE_STACK_CHECKING", "1")
         .files(TX_PORT_FILES.iter().map(|&s| tx_port_dir.join(s)))
         .files(TX_COMMON_FILES.iter().map(|&s| tx_common_dir.join(s)))
         .compile("threadx");

@@ -137,6 +137,95 @@ impl core::fmt::Write for &GlobalUart {
     }
 }
 
+/// Stack error handler invoked when ThreadX detects stack corruption.
+///
+/// This is called when stack checking discovers that a thread has overflowed
+/// its stack. ThreadX fills unused stack space with 0xEFEF pattern and validates
+/// this pattern on context switches when TX_ENABLE_STACK_CHECKING is enabled.
+///
+/// # Safety
+/// This function is called from ThreadX kernel context (during context switch)
+/// where blocking operations are forbidden. It uses emergency UART bypass to
+/// avoid mutex deadlocks and minimizes stack usage to prevent further corruption.
+///
+/// # Implementation Notes
+/// - Uses `emergency_write_str()` to bypass ThreadX mutex on UART
+/// - Minimal stack usage (no format machinery beyond simple writes)
+/// - Validates pointers before dereferencing to avoid double-faults
+/// - Halts CPU with interrupts disabled instead of panic (no unwinding)
+#[no_mangle]
+extern "C" fn stack_error_handler(thread_ptr: *mut threadx_sys::TX_THREAD_STRUCT) {
+    use core::fmt::Write;
+
+    // Emergency writer that bypasses all mutexes
+    struct EmergencyWriter;
+    impl core::fmt::Write for EmergencyWriter {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            unsafe {
+                Uart::<0x101f_1000>::emergency_write_str(s);
+            }
+            Ok(())
+        }
+    }
+
+    let mut w = EmergencyWriter;
+
+    unsafe {
+        let _ = writeln!(w, "\r\n!!! STACK OVERFLOW DETECTED !!!");
+
+        // Validate pointer before dereferencing
+        if thread_ptr.is_null() {
+            let _ = writeln!(w, "Thread: NULL pointer");
+        } else {
+            // Print pointer first in case struct is corrupted
+            let _ = writeln!(w, "Thread @ {:p}", thread_ptr);
+
+            let thread = &*thread_ptr;
+
+            // Attempt to read name carefully (may be corrupted)
+            let name_ptr = thread.tx_thread_name;
+            if !name_ptr.is_null() {
+                // Limit read to 32 bytes to avoid reading garbage forever
+                let bytes = core::slice::from_raw_parts(name_ptr as *const u8, 32);
+                let _ = write!(w, "Name: ");
+                for &b in bytes {
+                    if b == 0 {
+                        break;
+                    }
+                    if b.is_ascii_graphic() || b == b' ' {
+                        let _ = write!(w, "{}", b as char);
+                    } else {
+                        let _ = write!(w, "?");
+                    }
+                }
+                let _ = writeln!(w, "");
+            }
+
+            // Print stack boundaries
+            let _ = writeln!(
+                w,
+                "Stack: {:p} - {:p} (size={})",
+                thread.tx_thread_stack_start,
+                thread.tx_thread_stack_end,
+                thread.tx_thread_stack_size
+            );
+            let _ = writeln!(w, "Stack SP: {:p}", thread.tx_thread_stack_ptr);
+        }
+
+        let _ = writeln!(w, "System halted.");
+
+        // Disable interrupts and halt CPU
+        // Do NOT use panic!() - it may try to acquire locks
+        core::arch::asm!(
+            "cpsid i",      // Disable interrupts (CPSR I bit)
+            "2:",
+            "wfi",          // Wait for interrupt (low power)
+            "b 2b",         // Loop forever
+            options(noreturn)
+        );
+    }
+}
+
 /// Initializes the application.
 ///
 /// This is invoked by ThreadX during scheduler start-up and is used to create
@@ -144,6 +233,11 @@ impl core::fmt::Write for &GlobalUart {
 #[no_mangle]
 extern "C" fn tx_application_define(_first_unused_memory: *mut core::ffi::c_void) {
     _ = writeln!(&UART, "In tx_application_define()...");
+
+    // Register stack error notification handler
+    unsafe {
+        threadx_sys::_tx_thread_stack_error_notify(Some(stack_error_handler));
+    }
 
     // ThreadX requires a mutable pointer to a character array for object names,
     // which it retains internally. These names must have a static lifetime.
@@ -321,8 +415,23 @@ unsafe extern "C" fn handle_interrupt() {
 /// breakpoint.
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
+    use core::fmt::Write;
+
+    // Use emergency UART bypass to avoid mutex deadlocks during panic
+    struct EmergencyWriter;
+    impl core::fmt::Write for EmergencyWriter {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            unsafe {
+                Uart::<0x101f_1000>::emergency_write_str(s);
+            }
+            Ok(())
+        }
+    }
+
+    let mut w = EmergencyWriter;
+    let _ = writeln!(w, "\r\nPANIC: {:?}", info);
+
     const SYS_REPORTEXC: u32 = 0x18;
-    let _ = writeln!(&UART, "PANIC: {:?}", info);
     loop {
         // Exit, using semihosting
         unsafe {
