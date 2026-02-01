@@ -2,6 +2,7 @@
 
 #![no_std]
 
+pub mod buffered_uart;
 pub mod exception;
 pub mod pl011_uart;
 pub mod pl190_vic;
