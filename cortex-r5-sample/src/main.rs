@@ -6,6 +6,7 @@
 use byte_strings::c;
 use core::fmt::Write as _;
 use cortex_r5_sample::{
+    config::{TIMER0_IRQ, UART0_BASE, UART0_IRQ, VIC_BASE},
     pl011_uart::Uart,
     pl190_vic,
     sp804_timer::{self, Timer0},
@@ -90,7 +91,7 @@ extern "C" fn stack_error_handler(thread_ptr: *mut threadx_sys::TX_THREAD_STRUCT
     impl core::fmt::Write for EmergencyWriter {
         fn write_str(&mut self, s: &str) -> core::fmt::Result {
             unsafe {
-                Uart::<0x101f_1000>::emergency_write_str(s);
+                Uart::<UART0_BASE>::emergency_write_str(s);
             }
             Ok(())
         }
@@ -126,7 +127,7 @@ extern "C" fn stack_error_handler(thread_ptr: *mut threadx_sys::TX_THREAD_STRUCT
                         let _ = write!(w, "?");
                     }
                 }
-                let _ = writeln!(w, "");
+                let _ = writeln!(w);
             }
 
             // Print stack boundaries
@@ -290,7 +291,7 @@ extern "C" fn my_thread(value: u32) {
 
 /// Entry point for the Rust application.
 ///
-/// This is invoked by the startup code in 'lib.rs'.
+/// This is invoked by the startup code in 'startup.rs'.
 #[no_mangle]
 pub extern "C" fn kmain() {
     // Initialize UART hardware
@@ -310,12 +311,10 @@ pub extern "C" fn kmain() {
     );
 
     // Enable interrupts on the VIC
-    // Timer0 = interrupt 4
-    // UART0 = interrupt 12
     let mut vic = unsafe { pl190_vic::Interrupt::new() };
     vic.init();
-    vic.enable_interrupt(4);   // Timer0
-    vic.enable_interrupt(12);  // UART0
+    vic.enable_interrupt(TIMER0_IRQ);
+    vic.enable_interrupt(UART0_IRQ);
 
     timer0.start();
 
@@ -341,14 +340,14 @@ unsafe extern "C" fn handle_interrupt() {
         Timer0::clear_interrupt();
     }
 
-    // Check for UART TX interrupt (interrupt 12 on VIC)
+    // Check for UART TX interrupt on VIC
     // Note: We check the VIC status register to determine which interrupt fired
     let vic_status = unsafe {
-        let vic_base = 0x1014_0000 as *const u32;
+        let vic_base = VIC_BASE as *const u32;
         vic_base.read_volatile()
     };
 
-    if (vic_status & (1 << 12)) != 0 {
+    if (vic_status & (1 << UART0_IRQ)) != 0 {
         cortex_r5_sample::buffered_uart::handle_tx_interrupt();
     }
 }
@@ -366,7 +365,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     impl core::fmt::Write for EmergencyWriter {
         fn write_str(&mut self, s: &str) -> core::fmt::Result {
             unsafe {
-                Uart::<0x101f_1000>::emergency_write_str(s);
+                Uart::<UART0_BASE>::emergency_write_str(s);
             }
             Ok(())
         }

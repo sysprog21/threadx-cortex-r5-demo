@@ -1,17 +1,19 @@
 //! Implementation for the Arm PL190 Vector Interrupt Controller
 
+use crate::config::VIC_BASE;
+
 /// A driver for a virtual PL190 Vector Interrupt Controller
 ///
 /// While some essential initialization steps may be omitted, it functions
 /// correctly on QEMU.
 pub struct Interrupt<const ADDR: usize>();
 
-impl Interrupt<0x10140000> {
+impl Interrupt<VIC_BASE> {
     /// Create an interrupt controller driver
     ///
     /// # Safety
     /// Only construct one object per Interrupt Controller at any given time.
-    pub unsafe fn new() -> Interrupt<0x10140000> {
+    pub unsafe fn new() -> Interrupt<VIC_BASE> {
         Interrupt()
     }
 }

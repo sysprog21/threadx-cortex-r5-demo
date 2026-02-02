@@ -1,31 +1,31 @@
 //! Implementation for the Arm PL011 UART
 
+use crate::config::{uart, UART0_BASE};
+
 /// Device driver for a virtual PL011 UART
 ///
 /// While some essential initialization steps may be omitted, it functions
 /// correctly on QEMU
 pub struct Uart<const ADDR: usize>();
 
-impl Uart<0x101f_1000> {
+impl Uart<UART0_BASE> {
     /// Create a new UART object for UART0
     ///
     /// # Safety
     /// Only construct one object per UART at any given time.
     pub unsafe fn new_uart0() -> Self {
         let mut u = Uart();
-        u.set_control(Self::CONTROL_UARTEN | Self::CONTROL_TXE);
+        u.set_control(uart::CONTROL_UARTEN | uart::CONTROL_TXE);
         u
     }
 }
 
 impl<const ADDR: usize> Uart<ADDR> {
-    const FLAG_TXFF: u32 = 1 << 5;
-    const CONTROL_UARTEN: u32 = 1 << 0;
-    const CONTROL_TXE: u32 = 1 << 8;
+    const FLAG_TXFF: u32 = uart::FLAG_TXFF;
 
-    const DATA_OFFSET: usize = 0x000 >> 2;
-    const FLAG_OFFSET: usize = 0x018 >> 2;
-    const CONTROL_OFFSET: usize = 0x030 >> 2;
+    const DATA_OFFSET: usize = uart::DATA_OFFSET;
+    const FLAG_OFFSET: usize = uart::FLAG_OFFSET;
+    const CONTROL_OFFSET: usize = uart::CONTROL_OFFSET;
 
     /// Emergency write function that bypasses all locks and state checks.
     ///

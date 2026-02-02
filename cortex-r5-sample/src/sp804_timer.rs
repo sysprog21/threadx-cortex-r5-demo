@@ -1,5 +1,7 @@
 //! Implementation for the Arm SP804 Timer.
 
+use crate::config::TIMER0_BASE;
+
 /// Supported timer modes
 pub enum Mode {
     AutoReload = 0,
@@ -13,7 +15,7 @@ pub enum Interrupts {
 }
 
 /// Timer0 on an Arm Versatile Application Board.
-pub type Timer0 = Timer<0x101e_2000>;
+pub type Timer0 = Timer<TIMER0_BASE>;
 
 /// Device driver for a virtual SP804 Timer.
 ///

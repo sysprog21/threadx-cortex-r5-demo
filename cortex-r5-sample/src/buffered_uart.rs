@@ -13,6 +13,7 @@
 //! - **Exclusive UART Ownership**: No other code may manipulate the UART interrupt mask.
 //! - **Initialization**: Must call `init()` exactly once before any logging operations.
 
+use crate::config::{uart, UART0_BASE};
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, Ordering};
 use heapless::spsc::{Consumer, Producer, Queue};
@@ -46,25 +47,11 @@ static TX_PRODUCER: SyncUnsafeCell<Option<Producer<'static, u8, TX_BUFFER_SIZE>>
 static TX_CONSUMER: SyncUnsafeCell<Option<Consumer<'static, u8, TX_BUFFER_SIZE>>> =
     SyncUnsafeCell::new(None);
 
-/// Flag indicating if TX interrupt is enabled
-static TX_INTERRUPT_ENABLED: AtomicBool = AtomicBool::new(false);
-
 /// Flag indicating if the buffered UART has been initialized
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// Counter for dropped bytes when queue is full
 static DROPPED_BYTES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-
-/// PL011 UART register offsets
-const UART_BASE: usize = 0x101f_1000;
-const UART_DATA_OFFSET: usize = 0x000 >> 2;
-const UART_FLAG_OFFSET: usize = 0x018 >> 2;
-const UART_IMSC_OFFSET: usize = 0x038 >> 2;  // Interrupt Mask Set/Clear
-const UART_ICR_OFFSET: usize = 0x044 >> 2;   // Interrupt Clear
-
-const UART_FLAG_TXFF: u32 = 1 << 5;  // TX FIFO Full
-const UART_IMSC_TXIM: u32 = 1 << 5;  // TX Interrupt Mask
-const UART_ICR_TXIC: u32 = 1 << 5;   // Clear TX Interrupt
 
 /// Initialize the buffered UART system
 ///
@@ -98,21 +85,20 @@ pub unsafe fn init() {
 
     // Enable UART TX interrupt now that setup is complete
     enable_tx_interrupt();
-    TX_INTERRUPT_ENABLED.store(true, Ordering::Release);
 }
 
 /// Enable UART TX interrupt
 unsafe fn enable_tx_interrupt() {
-    let imsc_ptr = (UART_BASE as *mut u32).add(UART_IMSC_OFFSET);
+    let imsc_ptr = (UART0_BASE as *mut u32).add(uart::IMSC_OFFSET);
     let current = imsc_ptr.read_volatile();
-    imsc_ptr.write_volatile(current | UART_IMSC_TXIM);
+    imsc_ptr.write_volatile(current | uart::IMSC_TXIM);
 }
 
 /// Disable UART TX interrupt
 unsafe fn disable_tx_interrupt() {
-    let imsc_ptr = (UART_BASE as *mut u32).add(UART_IMSC_OFFSET);
+    let imsc_ptr = (UART0_BASE as *mut u32).add(uart::IMSC_OFFSET);
     let current = imsc_ptr.read_volatile();
-    imsc_ptr.write_volatile(current & !UART_IMSC_TXIM);
+    imsc_ptr.write_volatile(current & !uart::IMSC_TXIM);
 }
 
 /// Thread-safe buffered UART writer
@@ -149,9 +135,8 @@ impl core::fmt::Write for BufferedUartWriter {
                     core::sync::atomic::fence(Ordering::Release);
 
                     // Always enable TX interrupt to ensure queue gets drained
-                    // This is idempotent and prevents state drift issues
+                    // This is idempotent - safe to call even if already enabled
                     enable_tx_interrupt();
-                    TX_INTERRUPT_ENABLED.store(true, Ordering::Release);
                 }
             }
         });
@@ -172,17 +157,17 @@ pub unsafe fn handle_tx_interrupt() {
         return; // Silently ignore if not initialized
     }
 
-    let data_ptr = (UART_BASE as *mut u32).add(UART_DATA_OFFSET);
-    let flag_ptr = (UART_BASE as *const u32).add(UART_FLAG_OFFSET);
-    let icr_ptr = (UART_BASE as *mut u32).add(UART_ICR_OFFSET);
+    let data_ptr = (UART0_BASE as *mut u32).add(uart::DATA_OFFSET);
+    let flag_ptr = (UART0_BASE as *const u32).add(uart::FLAG_OFFSET);
+    let icr_ptr = (UART0_BASE as *mut u32).add(uart::ICR_OFFSET);
 
     // Clear the TX interrupt first to acknowledge hardware
-    icr_ptr.write_volatile(UART_ICR_TXIC);
+    icr_ptr.write_volatile(uart::ICR_TXIC);
 
     let consumer_opt = &mut *TX_CONSUMER.get();
     if let Some(consumer) = consumer_opt {
         // Send as many bytes as possible while FIFO has space
-        while (flag_ptr.read_volatile() & UART_FLAG_TXFF) == 0 {
+        while (flag_ptr.read_volatile() & uart::FLAG_TXFF) == 0 {
             match consumer.dequeue() {
                 Some(byte) => {
                     data_ptr.write_volatile(byte as u32);
@@ -190,7 +175,6 @@ pub unsafe fn handle_tx_interrupt() {
                 None => {
                     // Queue is empty, disable TX interrupt to avoid spurious interrupts
                     disable_tx_interrupt();
-                    TX_INTERRUPT_ENABLED.store(false, Ordering::Release);
                     break;
                 }
             }
