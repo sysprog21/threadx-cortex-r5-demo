@@ -63,15 +63,15 @@ static DROPPED_BYTES: core::sync::atomic::AtomicU32 = core::sync::atomic::Atomic
 /// Panics if called more than once.
 ///
 /// # Implementation Notes
-/// Disables TX interrupt before setup to prevent ISR running with uninitialized state,
-/// then enables it at the end.
+/// Disables TX interrupt during setup and LEAVES IT DISABLED.
+/// The interrupt will be enabled on-demand when data is written.
 pub unsafe fn init() {
     // Ensure init is only called once
     if INITIALIZED.swap(true, Ordering::AcqRel) {
         panic!("buffered_uart::init() called more than once");
     }
 
-    // Disable TX interrupt during initialization to prevent ISR with uninitialized state
+    // Disable TX interrupt during initialization
     disable_tx_interrupt();
 
     // Split the queue into producer and consumer
@@ -80,14 +80,18 @@ pub unsafe fn init() {
     *TX_PRODUCER.get() = Some(producer);
     *TX_CONSUMER.get() = Some(consumer);
 
-    // Memory barrier to ensure producer/consumer are visible before enabling interrupt
+    // Memory barrier to ensure producer/consumer are visible
     core::sync::atomic::fence(Ordering::Release);
 
-    // Enable UART TX interrupt now that setup is complete
-    enable_tx_interrupt();
+    // LEAVE TX interrupt DISABLED - will be enabled on first write
 }
 
 /// Enable UART TX interrupt
+///
+/// # Safety
+/// Must be called with interrupts disabled (inside critical section) to prevent
+/// race condition during Read-Modify-Write of IMSC register.
+#[inline(always)]
 unsafe fn enable_tx_interrupt() {
     let imsc_ptr = (UART0_BASE as *mut u32).add(uart::IMSC_OFFSET);
     let current = imsc_ptr.read_volatile();
@@ -95,6 +99,11 @@ unsafe fn enable_tx_interrupt() {
 }
 
 /// Disable UART TX interrupt
+///
+/// # Safety
+/// Safe to call from ISR context (interrupts already disabled at this priority).
+/// When called from thread context, must be inside critical section.
+#[inline(always)]
 unsafe fn disable_tx_interrupt() {
     let imsc_ptr = (UART0_BASE as *mut u32).add(uart::IMSC_OFFSET);
     let current = imsc_ptr.read_volatile();
@@ -111,16 +120,23 @@ impl core::fmt::Write for BufferedUartWriter {
             return Ok(()); // Silently drop if not initialized
         }
 
-        // Short critical section: only to access the producer
+        // Critical section: protect producer access AND IMSC register RMW
+        // Both operations must be atomic to prevent race conditions:
+        // 1. Producer enqueue must be serialized across threads
+        // 2. IMSC enable must not race with ISR's disable
         critical_section::with(|_| {
             unsafe {
                 let producer_opt = &mut *TX_PRODUCER.get();
                 if let Some(producer) = producer_opt {
-                    // Try to enqueue all bytes
+                    let mut enqueued = 0;
                     let mut dropped = 0;
+
+                    // Try to enqueue all bytes
                     for &byte in s.as_bytes() {
                         // If queue is full, drop the character (non-blocking)
-                        if producer.enqueue(byte).is_err() {
+                        if producer.enqueue(byte).is_ok() {
+                            enqueued += 1;
+                        } else {
                             dropped += 1;
                         }
                     }
@@ -130,16 +146,18 @@ impl core::fmt::Write for BufferedUartWriter {
                         DROPPED_BYTES.fetch_add(dropped, Ordering::Relaxed);
                     }
 
-                    // Memory fence: Ensure enqueue operations are visible before enabling interrupt
-                    // This prevents lost-wakeup race where ISR sees empty queue after we enable it
-                    core::sync::atomic::fence(Ordering::Release);
-
-                    // Always enable TX interrupt to ensure queue gets drained
-                    // This is idempotent - safe to call even if already enabled
-                    enable_tx_interrupt();
+                    // Enable TX interrupt if we enqueued data
+                    // MUST be inside critical section to prevent RMW race on IMSC register
+                    if enqueued > 0 {
+                        // Memory fence: Ensure enqueue operations are visible before enabling interrupt
+                        // This prevents lost-wakeup race where ISR sees empty queue after we enable it
+                        core::sync::atomic::fence(Ordering::Release);
+                        enable_tx_interrupt();
+                    }
                 }
             }
         });
+
         Ok(())
     }
 }

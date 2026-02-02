@@ -26,6 +26,7 @@ impl<const ADDR: usize> Interrupt<ADDR> {
     const IRQ_STATUS_OFFSET: usize = 0x00 >> 2;
     const INT_SELECT_OFFSET: usize = 0x0C >> 2;
     const INT_EN_OFFSET: usize = 0x10 >> 2;
+    const VECT_ADDR_OFFSET: usize = 0x30 >> 2;           // Vector Address register
     const DEF_VECT_ADDR_OFFSET: usize = 0x34 >> 2;
     const VECT_CTRL_N_START_OFFSET: usize = 0x200 >> 2;
 
@@ -66,13 +67,42 @@ impl<const ADDR: usize> Interrupt<ADDR> {
         }
 
         unsafe {
-            Self::BASE_PTR
-                .add(Self::INT_EN_OFFSET)
-                .write_volatile(1 << interrupt);
+            // Read-modify-write to avoid overwriting other enabled interrupts
+            // CRITICAL: Direct write would disable previously enabled interrupts
+            let ptr = Self::BASE_PTR.add(Self::INT_EN_OFFSET);
+            let current = ptr.read_volatile();
+            ptr.write_volatile(current | (1 << interrupt));
         }
     }
 
     pub fn read_interrupt_status() -> u32 {
         unsafe { Self::BASE_PTR.add(Self::IRQ_STATUS_OFFSET).read_volatile() }
+    }
+
+    /// Disable a specific interrupt
+    ///
+    /// Uses INTENCLEAR register (write-1-to-clear)
+    pub fn disable_interrupt(&mut self, interrupt: u8) {
+        if interrupt > Self::NUM_IRQS {
+            panic!("Bad IRQ");
+        }
+
+        unsafe {
+            // INTENCLEAR register at offset 0x14
+            Self::BASE_PTR
+                .add(0x14 >> 2)
+                .write_volatile(1 << interrupt);
+        }
+    }
+
+    /// Acknowledge interrupt completion to VIC
+    ///
+    /// Must be called at the end of ISR to properly signal interrupt completion
+    /// to the PL190 VIC priority logic.
+    pub fn acknowledge_interrupt() {
+        unsafe {
+            // Write any value to VICADDRESS to acknowledge interrupt
+            Self::BASE_PTR.add(Self::VECT_ADDR_OFFSET).write_volatile(0);
+        }
     }
 }
