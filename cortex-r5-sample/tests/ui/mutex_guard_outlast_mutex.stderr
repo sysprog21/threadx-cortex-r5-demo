@@ -1,0 +1,26 @@
+error[E0597]: `ctx` does not live long enough
+  --> tests/ui/mutex_guard_outlast_mutex.rs:12:35
+   |
+10 |     let guard: MutexGuard<'_> = {
+   |         ----- borrow later stored here
+11 |         let ctx = pin!(MutexContext::new());
+   |             --- binding `ctx` declared here
+12 |         let mutex = Mutex::create(ctx.as_ref(), c"test", MutexOptions::default()).unwrap();
+   |                                   ^^^ borrowed value does not live long enough
+...
+15 |     };
+   |     - `ctx` dropped here while still borrowed
+
+error[E0716]: temporary value dropped while borrowed
+  --> tests/ui/mutex_guard_outlast_mutex.rs:11:19
+   |
+10 |     let guard: MutexGuard<'_> = {
+   |         ----- borrow later stored here
+11 |         let ctx = pin!(MutexContext::new());
+   |                   ^^^^^^^^^^^^^^^^^^^^^^^^^ creates a temporary value which is freed while still in use
+...
+15 |     };
+   |     - temporary value is freed at the end of this statement
+   |
+   = note: consider using a `let` binding to create a longer lived value
+   = note: this error originates in the macro `pin` (in Nightly builds, run with -Z macro-backtrace for more info)

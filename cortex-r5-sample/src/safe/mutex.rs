@@ -47,8 +47,9 @@ use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use super::tx_ffi;
 use super::TxError;
-use threadx_sys::{CHAR, TX_MUTEX, UINT, ULONG};
+use tx_ffi::{CHAR, TX_MUTEX, UINT, ULONG};
 
 /// Errors that can occur during mutex creation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,22 +224,18 @@ impl Mutex {
         }
 
         let inherit = if options.priority_inherit {
-            threadx_sys::TX_INHERIT
+            tx_ffi::TX_INHERIT
         } else {
-            threadx_sys::TX_NO_INHERIT
+            tx_ffi::TX_NO_INHERIT
         };
 
         let result = unsafe {
-            threadx_sys::_tx_mutex_create(
-                context.mutex.as_ptr(),
-                name.as_ptr() as *mut CHAR,
-                inherit,
-            )
+            tx_ffi::_tx_mutex_create(context.mutex.as_ptr(), name.as_ptr() as *mut CHAR, inherit)
         };
 
         match result {
-            threadx_sys::TX_SUCCESS => Ok(&context.get_ref().mutex),
-            threadx_sys::TX_CALLER_ERROR => {
+            tx_ffi::TX_SUCCESS => Ok(&context.get_ref().mutex),
+            tx_ffi::TX_CALLER_ERROR => {
                 // Roll back - allow re-creation attempts
                 context.created.store(false, Ordering::Release);
                 Err(CreateError::InvalidCaller)
@@ -259,14 +256,14 @@ impl Mutex {
     ///
     /// Do not call from ISR context - will return `InvalidCaller`.
     pub fn lock(&self) -> Result<MutexGuard<'_>, LockError> {
-        self.lock_with_timeout(threadx_sys::TX_WAIT_FOREVER)
+        self.lock_with_timeout(tx_ffi::TX_WAIT_FOREVER)
     }
 
     /// Attempts to acquire the mutex without blocking.
     ///
     /// Returns `Err(LockError::WouldBlock)` if the mutex is already held.
     pub fn try_lock(&self) -> Result<MutexGuard<'_>, LockError> {
-        self.lock_with_timeout(threadx_sys::TX_NO_WAIT)
+        self.lock_with_timeout(tx_ffi::TX_NO_WAIT)
     }
 
     /// Attempts to acquire the mutex with a timeout.
@@ -276,20 +273,20 @@ impl Mutex {
     /// - `timeout`: Maximum ticks to wait (TX_NO_WAIT for non-blocking,
     ///   TX_WAIT_FOREVER for indefinite)
     pub fn lock_with_timeout(&self, timeout: ULONG) -> Result<MutexGuard<'_>, LockError> {
-        let result = unsafe { threadx_sys::_tx_mutex_get(self.as_ptr(), timeout) };
+        let result = unsafe { tx_ffi::_tx_mutex_get(self.as_ptr(), timeout) };
 
         match result {
-            threadx_sys::TX_SUCCESS => Ok(MutexGuard {
+            tx_ffi::TX_SUCCESS => Ok(MutexGuard {
                 mutex: self,
                 _not_send: core::marker::PhantomData,
             }),
-            threadx_sys::TX_NOT_AVAILABLE => Err(LockError::WouldBlock),
-            threadx_sys::TX_WAIT_ABORTED => Err(LockError::WaitAborted),
-            threadx_sys::TX_MUTEX_ERROR => Err(LockError::Deleted),
-            threadx_sys::TX_CALLER_ERROR => Err(LockError::InvalidCaller),
+            tx_ffi::TX_NOT_AVAILABLE => Err(LockError::WouldBlock),
+            tx_ffi::TX_WAIT_ABORTED => Err(LockError::WaitAborted),
+            tx_ffi::TX_MUTEX_ERROR => Err(LockError::Deleted),
+            tx_ffi::TX_CALLER_ERROR => Err(LockError::InvalidCaller),
             _ => {
                 // Check if it was a timeout (non-success with timeout specified)
-                if timeout != threadx_sys::TX_WAIT_FOREVER && timeout != threadx_sys::TX_NO_WAIT {
+                if timeout != tx_ffi::TX_WAIT_FOREVER && timeout != tx_ffi::TX_NO_WAIT {
                     Err(LockError::Timeout)
                 } else {
                     Err(LockError::ThreadXError(result))
@@ -300,8 +297,8 @@ impl Mutex {
 
     /// Releases the mutex (internal, called by MutexGuard::drop).
     fn unlock(&self) -> Result<(), UINT> {
-        let result = unsafe { threadx_sys::_tx_mutex_put(self.as_ptr()) };
-        if result == threadx_sys::TX_SUCCESS {
+        let result = unsafe { tx_ffi::_tx_mutex_put(self.as_ptr()) };
+        if result == tx_ffi::TX_SUCCESS {
             Ok(())
         } else {
             Err(result)
@@ -312,8 +309,8 @@ impl Mutex {
     ///
     /// Any threads waiting on the mutex will receive an error.
     pub fn delete(&self) -> Result<(), UINT> {
-        let result = unsafe { threadx_sys::_tx_mutex_delete(self.as_ptr()) };
-        if result == threadx_sys::TX_SUCCESS {
+        let result = unsafe { tx_ffi::_tx_mutex_delete(self.as_ptr()) };
+        if result == tx_ffi::TX_SUCCESS {
             Ok(())
         } else {
             Err(result)
@@ -339,7 +336,7 @@ impl Mutex {
     /// # Safety
     ///
     /// This reads from the ThreadX control block.
-    pub unsafe fn owner(&self) -> Option<*mut threadx_sys::TX_THREAD> {
+    pub unsafe fn owner(&self) -> Option<*mut tx_ffi::TX_THREAD> {
         let owner = (*self.as_ptr()).tx_mutex_owner;
         if owner.is_null() {
             None

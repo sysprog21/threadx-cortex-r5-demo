@@ -28,7 +28,7 @@
 //! static STACK: StaticCell<[u8; 4096]> = StaticCell::new([0u8; 4096]);
 //!
 //! unsafe extern "C" fn my_entry(_: u32) {
-//!     loop { threadx_sys::_tx_thread_sleep(100); }
+//!     loop { tx_ffi::_tx_thread_sleep(100); }
 //! }
 //!
 //! // In tx_application_define:
@@ -57,8 +57,9 @@ use core::marker::PhantomPinned;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use super::tx_ffi;
 use super::TxError;
-use threadx_sys::{CHAR, TX_THREAD, UINT, ULONG};
+use tx_ffi::{CHAR, TX_THREAD, UINT, ULONG};
 
 /// Errors that can occur during thread creation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,7 +120,7 @@ impl Default for ThreadOptions {
             entry_input: 0,
             priority: 16,
             preemption_threshold: 16,
-            time_slice: threadx_sys::TX_NO_TIME_SLICE,
+            time_slice: tx_ffi::TX_NO_TIME_SLICE,
             auto_start: true,
         }
     }
@@ -128,7 +129,7 @@ impl Default for ThreadOptions {
 /// Default entry point (sleeps forever).
 unsafe extern "C" fn default_entry(_: ULONG) {
     loop {
-        threadx_sys::_tx_thread_sleep(1000);
+        tx_ffi::_tx_thread_sleep(1000);
     }
 }
 
@@ -289,7 +290,7 @@ impl Thread {
     /// static THREAD_CTX: StaticCell<ThreadContext> = StaticCell::new(ThreadContext::new());
     /// static STACK: StaticCell<[u8; 4096]> = StaticCell::new([0u8; 4096]);
     ///
-    /// unsafe extern "C" fn entry(_: u32) { loop { threadx_sys::_tx_thread_sleep(100); } }
+    /// unsafe extern "C" fn entry(_: u32) { loop { tx_ffi::_tx_thread_sleep(100); } }
     ///
     /// let ctx = unsafe { THREAD_CTX.uninit().assume_init_mut() };
     /// let stack = unsafe { STACK.uninit().assume_init_mut() };
@@ -350,16 +351,16 @@ impl Thread {
         }
 
         let auto_start = if options.auto_start {
-            threadx_sys::TX_AUTO_START
+            tx_ffi::TX_AUTO_START
         } else {
-            threadx_sys::TX_DONT_START
+            tx_ffi::TX_DONT_START
         };
 
         // SAFETY: We have a pinned reference to an uninitialized context.
         // The context is pinned, so the control block won't move.
         // ThreadX will initialize the control block.
         let result = unsafe {
-            threadx_sys::_tx_thread_create(
+            tx_ffi::_tx_thread_create(
                 context.thread.as_ptr(),
                 name.as_ptr() as *mut CHAR,
                 Some(options.entry_fn),
@@ -373,7 +374,7 @@ impl Thread {
             )
         };
 
-        if result != threadx_sys::TX_SUCCESS {
+        if result != tx_ffi::TX_SUCCESS {
             // Roll back - allow re-creation attempts
             context.created.store(false, Ordering::Release);
             return Err(CreateError::ThreadXError(result));
@@ -394,8 +395,8 @@ impl Thread {
     /// Suspending a thread while it holds resources (mutexes, semaphores)
     /// may cause deadlocks.
     pub fn suspend(&self) -> Result<(), UINT> {
-        let result = unsafe { threadx_sys::_tx_thread_suspend(self.as_ptr()) };
-        if result == threadx_sys::TX_SUCCESS {
+        let result = unsafe { tx_ffi::_tx_thread_suspend(self.as_ptr()) };
+        if result == tx_ffi::TX_SUCCESS {
             Ok(())
         } else {
             Err(result)
@@ -404,8 +405,8 @@ impl Thread {
 
     /// Resumes a suspended thread.
     pub fn resume(&self) -> Result<(), UINT> {
-        let result = unsafe { threadx_sys::_tx_thread_resume(self.as_ptr()) };
-        if result == threadx_sys::TX_SUCCESS {
+        let result = unsafe { tx_ffi::_tx_thread_resume(self.as_ptr()) };
+        if result == tx_ffi::TX_SUCCESS {
             Ok(())
         } else {
             Err(result)
@@ -416,8 +417,8 @@ impl Thread {
     ///
     /// The thread must be terminated before deletion.
     pub fn terminate(&self) -> Result<(), UINT> {
-        let result = unsafe { threadx_sys::_tx_thread_terminate(self.as_ptr()) };
-        if result == threadx_sys::TX_SUCCESS {
+        let result = unsafe { tx_ffi::_tx_thread_terminate(self.as_ptr()) };
+        if result == tx_ffi::TX_SUCCESS {
             Ok(())
         } else {
             Err(result)
@@ -426,8 +427,8 @@ impl Thread {
 
     /// Resets a terminated thread to ready state.
     pub fn reset(&self) -> Result<(), UINT> {
-        let result = unsafe { threadx_sys::_tx_thread_reset(self.as_ptr()) };
-        if result == threadx_sys::TX_SUCCESS {
+        let result = unsafe { tx_ffi::_tx_thread_reset(self.as_ptr()) };
+        if result == tx_ffi::TX_SUCCESS {
             Ok(())
         } else {
             Err(result)
@@ -443,8 +444,8 @@ impl Thread {
     /// After deletion, the context can be reused by calling
     /// `ThreadContext::reset_created()` followed by `Thread::create()`.
     pub fn delete(&self) -> Result<(), UINT> {
-        let result = unsafe { threadx_sys::_tx_thread_delete(self.as_ptr()) };
-        if result == threadx_sys::TX_SUCCESS {
+        let result = unsafe { tx_ffi::_tx_thread_delete(self.as_ptr()) };
+        if result == tx_ffi::TX_SUCCESS {
             Ok(())
         } else {
             Err(result)
@@ -494,7 +495,7 @@ impl Thread {
 #[inline]
 pub fn sleep(ticks: ULONG) {
     unsafe {
-        threadx_sys::_tx_thread_sleep(ticks);
+        tx_ffi::_tx_thread_sleep(ticks);
     }
 }
 
@@ -502,7 +503,7 @@ pub fn sleep(ticks: ULONG) {
 #[inline]
 pub fn relinquish() {
     unsafe {
-        threadx_sys::_tx_thread_relinquish();
+        tx_ffi::_tx_thread_relinquish();
     }
 }
 
@@ -511,7 +512,7 @@ pub fn relinquish() {
 /// Returns `None` if called before kernel initialization or from ISR
 /// during initialization.
 pub fn identify() -> Option<*mut TX_THREAD> {
-    let ptr = unsafe { threadx_sys::_tx_thread_identify() };
+    let ptr = unsafe { tx_ffi::_tx_thread_identify() };
     if ptr.is_null() {
         None
     } else {

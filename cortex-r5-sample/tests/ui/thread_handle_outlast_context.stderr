@@ -1,0 +1,27 @@
+error[E0597]: `ctx` does not live long enough
+  --> tests/ui/thread_handle_outlast_context.rs:20:13
+   |
+16 |     let thread: &Thread = {
+   |         ------ borrow later stored here
+17 |         let ctx = pin!(ThreadContext::new());
+   |             --- binding `ctx` declared here
+...
+20 |             ctx.as_ref(),
+   |             ^^^ borrowed value does not live long enough
+...
+31 |     };
+   |     - `ctx` dropped here while still borrowed
+
+error[E0716]: temporary value dropped while borrowed
+  --> tests/ui/thread_handle_outlast_context.rs:17:19
+   |
+16 |     let thread: &Thread = {
+   |         ------ borrow later stored here
+17 |         let ctx = pin!(ThreadContext::new());
+   |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^ creates a temporary value which is freed while still in use
+...
+31 |     };
+   |     - temporary value is freed at the end of this statement
+   |
+   = note: consider using a `let` binding to create a longer lived value
+   = note: this error originates in the macro `pin` (in Nightly builds, run with -Z macro-backtrace for more info)

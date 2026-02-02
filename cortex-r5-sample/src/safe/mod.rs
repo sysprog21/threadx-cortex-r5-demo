@@ -91,6 +91,23 @@
 use core::cell::Cell;
 use core::marker::PhantomData;
 
+// When host-test feature is enabled, use stub types instead of threadx-sys.
+// This allows compile-fail tests to run on the host without actual ThreadX bindings.
+#[cfg(feature = "host-test")]
+pub(crate) mod host_test_stubs;
+
+// Re-export ThreadX types and functions from either the real threadx-sys or stubs.
+// This allows the rest of the safe module to use `tx_ffi::*` uniformly.
+#[cfg(not(feature = "host-test"))]
+pub(crate) mod tx_ffi {
+    pub use threadx_sys::*;
+}
+
+#[cfg(feature = "host-test")]
+pub(crate) mod tx_ffi {
+    pub use super::host_test_stubs::*;
+}
+
 pub mod mutex;
 pub mod queue;
 pub mod thread;

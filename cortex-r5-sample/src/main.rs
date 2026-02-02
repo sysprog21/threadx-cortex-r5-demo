@@ -1,5 +1,9 @@
 //! Rust demonstration for a QEMU Arm Cortex-R machine running ThreadX.
+//!
+//! This binary is not compiled when the `host-test` feature is enabled.
 
+// Guard entire binary for embedded target only
+#![cfg(not(feature = "host-test"))]
 #![no_std]
 #![no_main]
 

@@ -25,7 +25,7 @@
 //! ```no_run
 //! use cortex_r5_sample::safe::queue::{Queue, QueueContext, QueueOptions, queue_storage_size};
 //! use static_cell::StaticCell;
-//! use threadx_sys::ULONG;
+//! use tx_ffi::ULONG;
 //! use core::pin::Pin;
 //!
 //! // Queue context and storage for 16 u32 messages
@@ -56,8 +56,9 @@ use core::mem;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use super::tx_ffi;
 use super::TxError;
-use threadx_sys::{CHAR, TX_QUEUE, UINT, ULONG};
+use tx_ffi::{CHAR, TX_QUEUE, UINT, ULONG};
 
 /// Errors that can occur during queue creation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,7 +203,7 @@ impl<T: Copy> QueueContext<T> {
 ///
 /// ```no_run
 /// use cortex_r5_sample::safe::queue::queue_storage_size;
-/// use threadx_sys::ULONG;
+/// use tx_ffi::ULONG;
 ///
 /// // Storage for 16 u32 messages
 /// static STORAGE: [ULONG; queue_storage_size::<u32>(16)] = [0; queue_storage_size::<u32>(16)];
@@ -276,7 +277,7 @@ impl<T: Copy> Queue<T> {
     /// ```no_run
     /// use cortex_r5_sample::safe::queue::{Queue, QueueContext, QueueOptions, queue_storage_size};
     /// use static_cell::StaticCell;
-    /// use threadx_sys::ULONG;
+    /// use tx_ffi::ULONG;
     /// use core::pin::Pin;
     ///
     /// static QUEUE_CTX: StaticCell<QueueContext<u32>> = StaticCell::new(QueueContext::new());
@@ -326,7 +327,7 @@ impl<T: Copy> Queue<T> {
         let storage_size_bytes = storage.len() * mem::size_of::<ULONG>();
 
         let result = unsafe {
-            threadx_sys::_tx_queue_create(
+            tx_ffi::_tx_queue_create(
                 context.queue.as_ptr(),
                 name.as_ptr() as *mut CHAR,
                 msg_size as UINT,
@@ -336,8 +337,8 @@ impl<T: Copy> Queue<T> {
         };
 
         match result {
-            threadx_sys::TX_SUCCESS => Ok(&context.get_ref().queue),
-            threadx_sys::TX_CALLER_ERROR => {
+            tx_ffi::TX_SUCCESS => Ok(&context.get_ref().queue),
+            tx_ffi::TX_CALLER_ERROR => {
                 // Roll back - allow re-creation attempts
                 context.created.store(false, Ordering::Release);
                 Err(CreateError::InvalidCaller)
@@ -352,12 +353,12 @@ impl<T: Copy> Queue<T> {
 
     /// Sends a message to the queue, blocking until space is available.
     pub fn send(&self, message: &T) -> Result<(), QueueError> {
-        self.send_with_timeout(message, threadx_sys::TX_WAIT_FOREVER)
+        self.send_with_timeout(message, tx_ffi::TX_WAIT_FOREVER)
     }
 
     /// Attempts to send a message without blocking.
     pub fn try_send(&self, message: &T) -> Result<(), QueueError> {
-        self.send_with_timeout(message, threadx_sys::TX_NO_WAIT)
+        self.send_with_timeout(message, tx_ffi::TX_NO_WAIT)
     }
 
     /// Sends a message with a timeout.
@@ -382,7 +383,7 @@ impl<T: Copy> Queue<T> {
         }
 
         let result = unsafe {
-            threadx_sys::_tx_queue_send(
+            tx_ffi::_tx_queue_send(
                 self.as_ptr(),
                 buffer.as_ptr() as *mut core::ffi::c_void,
                 timeout,
@@ -394,12 +395,12 @@ impl<T: Copy> Queue<T> {
 
     /// Sends a message to the front of the queue (highest priority).
     pub fn send_front(&self, message: &T) -> Result<(), QueueError> {
-        self.send_front_with_timeout(message, threadx_sys::TX_WAIT_FOREVER)
+        self.send_front_with_timeout(message, tx_ffi::TX_WAIT_FOREVER)
     }
 
     /// Sends to front without blocking.
     pub fn try_send_front(&self, message: &T) -> Result<(), QueueError> {
-        self.send_front_with_timeout(message, threadx_sys::TX_NO_WAIT)
+        self.send_front_with_timeout(message, tx_ffi::TX_NO_WAIT)
     }
 
     /// Sends to front with timeout.
@@ -418,7 +419,7 @@ impl<T: Copy> Queue<T> {
         }
 
         let result = unsafe {
-            threadx_sys::_tx_queue_front_send(
+            tx_ffi::_tx_queue_front_send(
                 self.as_ptr(),
                 buffer.as_ptr() as *mut core::ffi::c_void,
                 timeout,
@@ -431,13 +432,13 @@ impl<T: Copy> Queue<T> {
     /// Helper to map ThreadX send results
     fn map_send_result(result: UINT, timeout: ULONG) -> Result<(), QueueError> {
         match result {
-            threadx_sys::TX_SUCCESS => Ok(()),
-            threadx_sys::TX_QUEUE_FULL => Err(QueueError::Full),
-            threadx_sys::TX_WAIT_ABORTED => Err(QueueError::WaitAborted),
-            threadx_sys::TX_QUEUE_ERROR => Err(QueueError::Deleted),
-            threadx_sys::TX_CALLER_ERROR => Err(QueueError::InvalidCaller),
+            tx_ffi::TX_SUCCESS => Ok(()),
+            tx_ffi::TX_QUEUE_FULL => Err(QueueError::Full),
+            tx_ffi::TX_WAIT_ABORTED => Err(QueueError::WaitAborted),
+            tx_ffi::TX_QUEUE_ERROR => Err(QueueError::Deleted),
+            tx_ffi::TX_CALLER_ERROR => Err(QueueError::InvalidCaller),
             _ => {
-                if timeout != threadx_sys::TX_WAIT_FOREVER && timeout != threadx_sys::TX_NO_WAIT {
+                if timeout != tx_ffi::TX_WAIT_FOREVER && timeout != tx_ffi::TX_NO_WAIT {
                     Err(QueueError::Timeout)
                 } else {
                     Err(QueueError::ThreadXError(result))
@@ -448,12 +449,12 @@ impl<T: Copy> Queue<T> {
 
     /// Receives a message from the queue, blocking until one is available.
     pub fn receive(&self, dest: &mut T) -> Result<(), QueueError> {
-        self.receive_with_timeout(dest, threadx_sys::TX_WAIT_FOREVER)
+        self.receive_with_timeout(dest, tx_ffi::TX_WAIT_FOREVER)
     }
 
     /// Attempts to receive a message without blocking.
     pub fn try_receive(&self, dest: &mut T) -> Result<(), QueueError> {
-        self.receive_with_timeout(dest, threadx_sys::TX_NO_WAIT)
+        self.receive_with_timeout(dest, tx_ffi::TX_NO_WAIT)
     }
 
     /// Receives a message with a timeout.
@@ -466,14 +467,14 @@ impl<T: Copy> Queue<T> {
         );
 
         let result = unsafe {
-            threadx_sys::_tx_queue_receive(
+            tx_ffi::_tx_queue_receive(
                 self.as_ptr(),
                 buffer.as_mut_ptr() as *mut core::ffi::c_void,
                 timeout,
             )
         };
 
-        if result == threadx_sys::TX_SUCCESS {
+        if result == tx_ffi::TX_SUCCESS {
             // Copy from buffer to dest
             unsafe {
                 let src = buffer.as_ptr() as *const u8;
@@ -489,13 +490,13 @@ impl<T: Copy> Queue<T> {
     /// Helper to map ThreadX receive results
     fn map_receive_result(result: UINT, timeout: ULONG) -> Result<(), QueueError> {
         match result {
-            threadx_sys::TX_SUCCESS => Ok(()), // Should be handled by caller
-            threadx_sys::TX_QUEUE_EMPTY => Err(QueueError::Empty),
-            threadx_sys::TX_WAIT_ABORTED => Err(QueueError::WaitAborted),
-            threadx_sys::TX_QUEUE_ERROR => Err(QueueError::Deleted),
-            threadx_sys::TX_CALLER_ERROR => Err(QueueError::InvalidCaller),
+            tx_ffi::TX_SUCCESS => Ok(()), // Should be handled by caller
+            tx_ffi::TX_QUEUE_EMPTY => Err(QueueError::Empty),
+            tx_ffi::TX_WAIT_ABORTED => Err(QueueError::WaitAborted),
+            tx_ffi::TX_QUEUE_ERROR => Err(QueueError::Deleted),
+            tx_ffi::TX_CALLER_ERROR => Err(QueueError::InvalidCaller),
             _ => {
-                if timeout != threadx_sys::TX_WAIT_FOREVER && timeout != threadx_sys::TX_NO_WAIT {
+                if timeout != tx_ffi::TX_WAIT_FOREVER && timeout != tx_ffi::TX_NO_WAIT {
                     Err(QueueError::Timeout)
                 } else {
                     Err(QueueError::ThreadXError(result))
@@ -506,8 +507,8 @@ impl<T: Copy> Queue<T> {
 
     /// Flushes all messages from the queue.
     pub fn flush(&self) -> Result<(), UINT> {
-        let result = unsafe { threadx_sys::_tx_queue_flush(self.as_ptr()) };
-        if result == threadx_sys::TX_SUCCESS {
+        let result = unsafe { tx_ffi::_tx_queue_flush(self.as_ptr()) };
+        if result == tx_ffi::TX_SUCCESS {
             Ok(())
         } else {
             Err(result)
@@ -518,8 +519,8 @@ impl<T: Copy> Queue<T> {
     ///
     /// Any threads waiting on the queue will receive an error.
     pub fn delete(&self) -> Result<(), UINT> {
-        let result = unsafe { threadx_sys::_tx_queue_delete(self.as_ptr()) };
-        if result == threadx_sys::TX_SUCCESS {
+        let result = unsafe { tx_ffi::_tx_queue_delete(self.as_ptr()) };
+        if result == tx_ffi::TX_SUCCESS {
             Ok(())
         } else {
             Err(result)

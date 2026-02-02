@@ -1,0 +1,27 @@
+error[E0597]: `ctx` does not live long enough
+  --> tests/ui/queue_handle_outlast_context.rs:15:23
+   |
+12 |     let queue: &Queue<u32> = {
+   |         ----- borrow later stored here
+13 |         let ctx = pin!(QueueContext::<u32>::new());
+   |             --- binding `ctx` declared here
+14 |         let storage = unsafe { &mut STORAGE };
+15 |         Queue::create(ctx.as_ref(), c"test", storage, QueueOptions::default()).unwrap()
+   |                       ^^^ borrowed value does not live long enough
+16 |         // ctx is dropped here
+17 |     };
+   |     - `ctx` dropped here while still borrowed
+
+error[E0716]: temporary value dropped while borrowed
+  --> tests/ui/queue_handle_outlast_context.rs:13:19
+   |
+12 |     let queue: &Queue<u32> = {
+   |         ----- borrow later stored here
+13 |         let ctx = pin!(QueueContext::<u32>::new());
+   |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ creates a temporary value which is freed while still in use
+...
+17 |     };
+   |     - temporary value is freed at the end of this statement
+   |
+   = note: consider using a `let` binding to create a longer lived value
+   = note: this error originates in the macro `pin` (in Nightly builds, run with -Z macro-backtrace for more info)

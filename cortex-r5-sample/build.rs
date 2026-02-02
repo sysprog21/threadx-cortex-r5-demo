@@ -212,6 +212,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let out_dir = PathBuf::from(env::var("OUT_DIR")?);
     let crate_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
 
+    // Skip ThreadX compilation when host-test feature is enabled.
+    // This allows compile-fail tests to run on the host platform.
+    if env::var("CARGO_FEATURE_HOST_TEST").is_ok() {
+        println!("cargo:warning=host-test feature enabled, skipping ThreadX compilation");
+        return Ok(());
+    }
+
     // Include the memory layout (linker script) in the linker's search path.
     fs::copy("linker.ld", out_dir.join("linker.ld"))?;
     println!("cargo:rustc-link-search={}", out_dir.display());

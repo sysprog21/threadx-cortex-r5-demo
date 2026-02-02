@@ -6,6 +6,25 @@ authors = ["National Cheng Kung University"]
 license = "MIT"
 description = "A basic Armv7-R demonstration application running ThreadX on QEMU"
 
+# Library crate for safe wrappers
+[lib]
+name = "cortex_r5_sample"
+path = "src/lib.rs"
+
+# Binary requires the "embedded" feature (not enabled in host-test mode)
+# This prevents the binary from being built during host-test
+[[bin]]
+name = "cortex-r5-sample"
+path = "src/main.rs"
+required-features = ["embedded"]
+
+[features]
+default = ["embedded"]
+# Enable this feature for running compile-fail tests on host
+host-test = []
+# Enable this feature for building the embedded binary (mutually exclusive with host-test)
+embedded = []
+
 [dependencies]
 embedded-alloc = "0.6.0"
 static_cell = "2.1.0"
@@ -16,6 +35,9 @@ heapless = "0.8"
 
 [build-dependencies]
 cc = "1.2.1"
+
+[dev-dependencies]
+trybuild = "1.0"
 
 [profile.release]
 codegen-units = 1
