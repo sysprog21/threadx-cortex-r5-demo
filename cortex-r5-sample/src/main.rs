@@ -166,10 +166,10 @@ extern "C" fn stack_error_handler(thread_ptr: *mut threadx_sys::TX_THREAD_STRUCT
     // Do NOT use panic!() - it may try to acquire locks
     unsafe {
         core::arch::asm!(
-            "cpsid i",      // Disable interrupts (CPSR I bit)
+            "cpsid i", // Disable interrupts (CPSR I bit)
             "2:",
-            "wfi",          // Wait for interrupt (low power)
-            "b 2b",         // Loop forever
+            "wfi",  // Wait for interrupt (low power)
+            "b 2b", // Loop forever
             options(noreturn)
         );
     }
@@ -361,13 +361,21 @@ pub extern "C" fn kmain() {
 
     // Debug: Check VIC state after Timer0
     let vic_inten_before = unsafe { ((VIC_BASE + 0x10) as *const u32).read_volatile() };
-    _ = writeln!(uart0, "VIC INTENABLE after Timer0: 0x{:08x}", vic_inten_before);
+    _ = writeln!(
+        uart0,
+        "VIC INTENABLE after Timer0: 0x{:08x}",
+        vic_inten_before
+    );
 
     vic.enable_interrupt(UART0_IRQ);
 
     // Debug: Check VIC state after UART0
     let vic_inten_after = unsafe { ((VIC_BASE + 0x10) as *const u32).read_volatile() };
-    _ = writeln!(uart0, "VIC INTENABLE after UART0: 0x{:08x}", vic_inten_after);
+    _ = writeln!(
+        uart0,
+        "VIC INTENABLE after UART0: 0x{:08x}",
+        vic_inten_after
+    );
 
     timer0.start();
 

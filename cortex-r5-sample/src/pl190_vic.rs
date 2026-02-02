@@ -26,7 +26,7 @@ impl<const ADDR: usize> Interrupt<ADDR> {
     const IRQ_STATUS_OFFSET: usize = 0x00 >> 2;
     const INT_SELECT_OFFSET: usize = 0x0C >> 2;
     const INT_EN_OFFSET: usize = 0x10 >> 2;
-    const VECT_ADDR_OFFSET: usize = 0x30 >> 2;           // Vector Address register
+    const VECT_ADDR_OFFSET: usize = 0x30 >> 2; // Vector Address register
     const DEF_VECT_ADDR_OFFSET: usize = 0x34 >> 2;
     const VECT_CTRL_N_START_OFFSET: usize = 0x200 >> 2;
 
@@ -89,9 +89,7 @@ impl<const ADDR: usize> Interrupt<ADDR> {
 
         unsafe {
             // INTENCLEAR register at offset 0x14
-            Self::BASE_PTR
-                .add(0x14 >> 2)
-                .write_volatile(1 << interrupt);
+            Self::BASE_PTR.add(0x14 >> 2).write_volatile(1 << interrupt);
         }
     }
 

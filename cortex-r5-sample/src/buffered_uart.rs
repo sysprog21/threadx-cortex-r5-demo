@@ -36,8 +36,7 @@ impl<T> SyncUnsafeCell<T> {
 }
 
 /// Global TX queue for buffered UART output
-static TX_QUEUE: SyncUnsafeCell<Queue<u8, TX_BUFFER_SIZE>> =
-    SyncUnsafeCell::new(Queue::new());
+static TX_QUEUE: SyncUnsafeCell<Queue<u8, TX_BUFFER_SIZE>> = SyncUnsafeCell::new(Queue::new());
 
 /// Producer handle (protected by critical section)
 static TX_PRODUCER: SyncUnsafeCell<Option<Producer<'static, u8, TX_BUFFER_SIZE>>> =

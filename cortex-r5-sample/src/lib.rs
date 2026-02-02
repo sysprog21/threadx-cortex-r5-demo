@@ -7,5 +7,7 @@ pub mod config;
 pub mod exception;
 pub mod pl011_uart;
 pub mod pl190_vic;
+pub mod safe;
 pub mod sp804_timer;
 pub mod startup;
+pub mod thread;
