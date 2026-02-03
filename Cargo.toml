@@ -1,0 +1,31 @@
+# Workspace root for ThreadX Cortex-R5 demo
+#
+# This workspace ties together the embedded application and host tooling.
+# The xtask pattern provides cargo-native commands: cargo xtask run, cargo xtask smoke
+
+[workspace]
+resolver = "2"
+members = [
+    "threadx-sys",
+    "cortex-r5-sample",
+    "xtask",
+]
+
+# Exclude externals from workspace (they have their own workspace roots)
+exclude = [
+    "externals",
+]
+
+# xtask alias: `cargo xtask` invokes `cargo run --manifest-path xtask/Cargo.toml --`
+[workspace.metadata.xtask]
+# Marker: this workspace supports `cargo xtask` commands
+
+# Profile settings for embedded binary (moved from cortex-r5-sample)
+[profile.release]
+codegen-units = 1
+debug = 2
+debug-assertions = true
+incremental = false
+lto = false
+opt-level = 1
+overflow-checks = true
