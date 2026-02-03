@@ -22,35 +22,24 @@ unsafe fn c_strlen_safe(s: *const u8, max: usize) -> usize {
 const RAM_START: usize = 0x0000_0000;
 const RAM_END: usize = 0x0100_0000;
 
-/// Helper: Format hex value into buffer
+/// Format a u32 as 8-digit uppercase hex into buf after prefix, followed by newline.
 ///
-/// Returns formatted string slice on success
-fn format_hex<'a>(buf: &'a mut [u8], prefix: &str, value: u32) -> Result<&'a str, ()> {
-    use core::fmt::Write;
-
-    struct BufWriter<'a> {
-        buf: &'a mut [u8],
-        pos: usize,
+/// No core::fmt dependency -- pure byte manipulation.
+fn format_hex<'a>(buf: &'a mut [u8], prefix: &str, value: u32) -> &'a str {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let pb = prefix.as_bytes();
+    let need = pb.len() + 8 + 1; // prefix + 8 hex digits + newline
+    if buf.len() < need {
+        return "";
     }
-
-    impl<'a> Write for BufWriter<'a> {
-        fn write_str(&mut self, s: &str) -> core::fmt::Result {
-            let bytes = s.as_bytes();
-            if self.pos + bytes.len() > self.buf.len() {
-                return Err(core::fmt::Error);
-            }
-            self.buf[self.pos..self.pos + bytes.len()].copy_from_slice(bytes);
-            self.pos += bytes.len();
-            Ok(())
-        }
+    buf[..pb.len()].copy_from_slice(pb);
+    let off = pb.len();
+    for i in 0..8 {
+        buf[off + i] = HEX[((value >> (28 - i * 4)) & 0xF) as usize];
     }
-
-    let mut writer = BufWriter { buf, pos: 0 };
-    if writeln!(writer, "{}{:08X}", prefix, value).is_ok() {
-        core::str::from_utf8(&writer.buf[..writer.pos]).map_err(|_| ())
-    } else {
-        Err(())
-    }
+    buf[off + 8] = b'\n';
+    // Safety: prefix is valid UTF-8, hex digits and newline are ASCII
+    unsafe { core::str::from_utf8_unchecked(&buf[..need]) }
 }
 
 /// Data Fault Address Register (CP15 c6, c0, 0)
@@ -137,24 +126,11 @@ pub extern "C" fn data_abort_handler(pc: u32) -> ! {
 
         Uart::<UART0_BASE>::emergency_write_str("\n=== DATA ABORT ===\n");
 
-        // Print PC first - critical diagnostic info
         let mut buf = [0u8; 64];
-        if let Ok(s) = format_hex(&mut buf, "PC:            0x", pc) {
-            Uart::<UART0_BASE>::emergency_write_str(s);
-        }
-
-        // Format fault address
-        if let Ok(s) = format_hex(&mut buf, "Fault Address: 0x", dfar) {
-            Uart::<UART0_BASE>::emergency_write_str(s);
-        }
-
-        // Format fault status
-        if let Ok(s) = format_hex(&mut buf, "Fault Status:  0x", dfsr) {
-            Uart::<UART0_BASE>::emergency_write_str(s);
-        }
-        if let Ok(s) = format_hex(&mut buf, " (type=0x", status) {
-            Uart::<UART0_BASE>::emergency_write_str(s);
-        }
+        Uart::<UART0_BASE>::emergency_write_str(format_hex(&mut buf, "PC:            0x", pc));
+        Uart::<UART0_BASE>::emergency_write_str(format_hex(&mut buf, "Fault Address: 0x", dfar));
+        Uart::<UART0_BASE>::emergency_write_str(format_hex(&mut buf, "Fault Status:  0x", dfsr));
+        Uart::<UART0_BASE>::emergency_write_str(format_hex(&mut buf, " (type=0x", status));
 
         // Safety checks for thread pointer to avoid nested faults
         if !thread.is_null()
@@ -217,24 +193,11 @@ pub extern "C" fn prefetch_abort_handler(pc: u32) -> ! {
 
         Uart::<UART0_BASE>::emergency_write_str("\n=== PREFETCH ABORT ===\n");
 
-        // Print PC first - critical diagnostic info
         let mut buf = [0u8; 64];
-        if let Ok(s) = format_hex(&mut buf, "PC:            0x", pc) {
-            Uart::<UART0_BASE>::emergency_write_str(s);
-        }
-
-        // Format fault address
-        if let Ok(s) = format_hex(&mut buf, "Fault Address: 0x", ifar) {
-            Uart::<UART0_BASE>::emergency_write_str(s);
-        }
-
-        // Format fault status
-        if let Ok(s) = format_hex(&mut buf, "Fault Status:  0x", ifsr) {
-            Uart::<UART0_BASE>::emergency_write_str(s);
-        }
-        if let Ok(s) = format_hex(&mut buf, " (type=0x", status) {
-            Uart::<UART0_BASE>::emergency_write_str(s);
-        }
+        Uart::<UART0_BASE>::emergency_write_str(format_hex(&mut buf, "PC:            0x", pc));
+        Uart::<UART0_BASE>::emergency_write_str(format_hex(&mut buf, "Fault Address: 0x", ifar));
+        Uart::<UART0_BASE>::emergency_write_str(format_hex(&mut buf, "Fault Status:  0x", ifsr));
+        Uart::<UART0_BASE>::emergency_write_str(format_hex(&mut buf, " (type=0x", status));
 
         // Safety checks for thread pointer
         if !thread.is_null()
@@ -289,11 +252,8 @@ pub extern "C" fn undefined_handler(pc: u32) -> ! {
 
         Uart::<UART0_BASE>::emergency_write_str("\n=== UNDEFINED INSTRUCTION ===\n");
 
-        // Print PC - critical diagnostic info
         let mut buf = [0u8; 64];
-        if let Ok(s) = format_hex(&mut buf, "PC:            0x", pc) {
-            Uart::<UART0_BASE>::emergency_write_str(s);
-        }
+        Uart::<UART0_BASE>::emergency_write_str(format_hex(&mut buf, "PC:            0x", pc));
 
         // Safety checks for thread pointer
         if !thread.is_null()

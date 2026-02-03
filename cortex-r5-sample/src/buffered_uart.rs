@@ -112,8 +112,10 @@ unsafe fn disable_tx_interrupt() {
 /// Thread-safe buffered UART writer
 pub struct BufferedUartWriter;
 
-impl core::fmt::Write for BufferedUartWriter {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+impl ufmt::uWrite for BufferedUartWriter {
+    type Error = core::convert::Infallible;
+
+    fn write_str(&mut self, s: &str) -> Result<(), Self::Error> {
         // Check if initialized (early return if not)
         if !INITIALIZED.load(Ordering::Acquire) {
             return Ok(()); // Silently drop if not initialized
@@ -213,12 +215,19 @@ pub fn get_dropped_bytes() -> u32 {
 }
 
 /// Print to buffered UART with newline
+///
+/// Wraps the entire format operation in a single critical section so the
+/// TX interrupt fires only once after all bytes are enqueued. Without this,
+/// ufmt's multiple `write_str` calls (one per literal/argument/newline) each
+/// enter and exit the critical section, allowing the TX ISR to fire between
+/// fragments and interfere with ThreadX scheduling state.
 #[macro_export]
 macro_rules! println_uart {
     ($($arg:tt)*) => {{
-        use core::fmt::Write;
-        let mut writer = $crate::buffered_uart::BufferedUartWriter;
-        let _ = writeln!(writer, $($arg)*);
+        critical_section::with(|_| {
+            let mut writer = $crate::buffered_uart::BufferedUartWriter;
+            let _ = ufmt::uwriteln!(writer, $($arg)*);
+        });
     }};
 }
 
@@ -226,8 +235,9 @@ macro_rules! println_uart {
 #[macro_export]
 macro_rules! print_uart {
     ($($arg:tt)*) => {{
-        use core::fmt::Write;
-        let mut writer = $crate::buffered_uart::BufferedUartWriter;
-        let _ = write!(writer, $($arg)*);
+        critical_section::with(|_| {
+            let mut writer = $crate::buffered_uart::BufferedUartWriter;
+            let _ = ufmt::uwrite!(writer, $($arg)*);
+        });
     }};
 }

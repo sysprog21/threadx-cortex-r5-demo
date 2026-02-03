@@ -1,17 +1,30 @@
 /*
- * Linker script for executing ThreadX and Rust applications on QEMU's VersatileAB
- * powered by Arm Cortex-R5 processor.
-*/
+ * Linker script for ThreadX + Rust on QEMU VersatileAB / ARM Cortex-R5.
+ *
+ * Memory is split into three regions modelling real Cortex-R5 TCM layout:
+ *   ITCM - vectors and startup code (zero-wait-state instruction fetch)
+ *   DTCM - system stacks (zero-wait-state data access)
+ *   RAM  - code, data, BSS, ThreadX heap
+ *
+ * On QEMU VersatileAB all three regions map to flat RAM.  On real silicon
+ * with tightly-coupled memories the layout gives deterministic interrupt
+ * latency and faster context switches.
+ */
 
 MEMORY {
-    RAM : ORIGIN = 0, LENGTH = 0x1000000
+    ITCM : ORIGIN = 0x00000000, LENGTH = 64K
+    DTCM : ORIGIN = 0x00020000, LENGTH = 64K
+    RAM  : ORIGIN = 0x00100000, LENGTH = 15M
 }
 
 ENTRY(_start)
+
 SECTIONS {
-    .startup ORIGIN(RAM) : {
+    /* Exception vectors and early startup in ITCM for deterministic fetch */
+    .startup ORIGIN(ITCM) : {
         *(.text.startup)
-    } > RAM
+    } > ITCM
+
     .text : { *(.text .text*) } > RAM
     .rodata : { *(.rodata .rodata*) } > RAM
     .data : { *(.data .data*) } > RAM
@@ -20,18 +33,19 @@ SECTIONS {
         *(.note .note*)
     }
 
+    /* First free RAM address -- ThreadX heap starts here */
     . = ALIGN(16);
-    .stack : {
-        _stack_bottom = ABSOLUTE(.) ;
-        /* Allocate space for the stack, ensuring it is sufficiently large to
-         * accommodate the IRQ, FIQ, and SYS stacks when nested interrupts are
-         * enabled.
-         */
-        .   =  ALIGN(8) ;
-        .   += 0x100000;
-        _sp =  . - 16 ;
-        _stack_top = ABSOLUTE(.) ;
-    } > RAM
+    _end = .; __end__ = .;
 
-  _end = .; __end__ = . ;
+    /* System stacks in DTCM for deterministic data access.
+     * ARM mode stacks (FIQ/IRQ/ABT/UND/SYS/SVC) are carved from this
+     * region by tx_initialize_low_level.S, working downward from _sp.
+     */
+    .stack (NOLOAD) : {
+        _stack_bottom = ABSOLUTE(.);
+        . = ALIGN(8);
+        . += LENGTH(DTCM);
+        _sp = . - 16;
+        _stack_top = ABSOLUTE(.);
+    } > DTCM
 }

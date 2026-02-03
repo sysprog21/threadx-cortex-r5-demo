@@ -7,7 +7,6 @@
 #![no_std]
 #![no_main]
 
-use core::fmt::Write as _;
 use cortex_r5_sample::{
     config::{TIMER0_IRQ, UART0_BASE, UART0_IRQ, VIC_BASE},
     pl011_uart::Uart,
@@ -77,7 +76,6 @@ const MUTEX_ROUNDS: u32 = 10;
 
 // Global primitives for runtime validation (initialized in tx_application_define)
 static TEST_MUTEX: StaticCell<threadx_sys::TX_MUTEX> = StaticCell::new();
-static TEST_SEMA: StaticCell<threadx_sys::TX_SEMAPHORE> = StaticCell::new();
 static TEST_FLAGS: StaticCell<threadx_sys::TX_EVENT_FLAGS_GROUP> = StaticCell::new();
 static TEST_QUEUE: StaticCell<threadx_sys::TX_QUEUE> = StaticCell::new();
 static TEST_QUEUE_STORAGE: StaticCell<[u32; 4]> = StaticCell::new();
@@ -96,116 +94,6 @@ static FLAGS_PTR: core::sync::atomic::AtomicPtr<threadx_sys::TX_EVENT_FLAGS_GROU
 // the mutex provides the happens-before relationship.
 static SHARED_COUNTER: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
-/// Stack error handler invoked when ThreadX detects stack corruption.
-///
-/// This is called when stack checking discovers that a thread has overflowed
-/// its stack. ThreadX fills unused stack space with 0xEFEF pattern and validates
-/// this pattern on context switches when TX_ENABLE_STACK_CHECKING is enabled.
-///
-/// # Safety
-/// This function is called from ThreadX kernel context (during context switch)
-/// where blocking operations are forbidden. It uses emergency UART bypass to
-/// avoid mutex deadlocks and minimizes stack usage to prevent further corruption.
-///
-/// # Implementation Notes
-/// - Uses `emergency_write_str()` to bypass ThreadX mutex on UART
-/// - Minimal stack usage (no format machinery beyond simple writes)
-/// - Validates pointers defensively - corruption may have trashed TCB
-/// - Halts CPU with interrupts disabled instead of panic (no unwinding)
-#[no_mangle]
-extern "C" fn stack_error_handler(thread_ptr: *mut threadx_sys::TX_THREAD_STRUCT) {
-    use core::fmt::Write;
-
-    // Emergency writer that bypasses all mutexes
-    struct EmergencyWriter;
-    impl core::fmt::Write for EmergencyWriter {
-        fn write_str(&mut self, s: &str) -> core::fmt::Result {
-            unsafe {
-                Uart::<UART0_BASE>::emergency_write_str(s);
-            }
-            Ok(())
-        }
-    }
-
-    let mut w = EmergencyWriter;
-
-    let _ = writeln!(w, "\r\n!!! STACK OVERFLOW DETECTED !!!");
-
-    // Validate pointer before dereferencing
-    if thread_ptr.is_null() {
-        let _ = writeln!(w, "Thread: NULL pointer");
-    } else {
-        // Print pointer first in case struct is corrupted
-        let _ = writeln!(w, "Thread @ {:p}", thread_ptr);
-
-        // SAFETY: We're in a stack corruption scenario - the TCB may be partially
-        // corrupted. Use volatile reads to prevent compiler optimizations that
-        // might cause issues, and validate each field before use.
-        unsafe {
-            // Check if pointer is aligned (basic sanity check)
-            if (thread_ptr as usize) % core::mem::align_of::<threadx_sys::TX_THREAD_STRUCT>() != 0 {
-                let _ = writeln!(w, "Thread pointer misaligned - TCB corrupted");
-            } else {
-                // Read fields using volatile to prevent optimization issues
-                let name_ptr = core::ptr::read_volatile(&(*thread_ptr).tx_thread_name);
-
-                // Attempt to read name carefully (may be corrupted)
-                if !name_ptr.is_null() {
-                    // Check if name pointer looks valid (within reasonable range)
-                    let name_addr = name_ptr as usize;
-                    // Sanity check: name should be in a reasonable memory range
-                    if name_addr > 0x1000 && name_addr < 0x8000_0000 {
-                        let _ = write!(w, "Name: ");
-                        // Read one byte at a time to minimize risk
-                        for i in 0..32usize {
-                            let byte_ptr = (name_ptr as *const u8).add(i);
-                            let b = core::ptr::read_volatile(byte_ptr);
-                            if b == 0 {
-                                break;
-                            }
-                            if b.is_ascii_graphic() || b == b' ' {
-                                let _ = write!(w, "{}", b as char);
-                            } else {
-                                let _ = write!(w, "?");
-                            }
-                        }
-                        let _ = writeln!(w);
-                    } else {
-                        let _ = writeln!(w, "Name: <invalid pointer {:p}>", name_ptr);
-                    }
-                }
-
-                // Read stack info using volatile
-                let stack_start = core::ptr::read_volatile(&(*thread_ptr).tx_thread_stack_start);
-                let stack_end = core::ptr::read_volatile(&(*thread_ptr).tx_thread_stack_end);
-                let stack_size = core::ptr::read_volatile(&(*thread_ptr).tx_thread_stack_size);
-                let stack_ptr = core::ptr::read_volatile(&(*thread_ptr).tx_thread_stack_ptr);
-
-                let _ = writeln!(
-                    w,
-                    "Stack: {:p} - {:p} (size={})",
-                    stack_start, stack_end, stack_size
-                );
-                let _ = writeln!(w, "Stack SP: {:p}", stack_ptr);
-            }
-        }
-    }
-
-    let _ = writeln!(w, "System halted.");
-
-    // Disable interrupts and halt CPU
-    // Do NOT use panic!() - it may try to acquire locks
-    unsafe {
-        core::arch::asm!(
-            "cpsid i", // Disable interrupts (CPSR I bit)
-            "2:",
-            "wfi",  // Wait for interrupt (low power)
-            "b 2b", // Loop forever
-            options(noreturn)
-        );
-    }
-}
-
 /// Initializes the application.
 ///
 /// This is invoked by ThreadX during scheduler start-up and is used to create
@@ -213,11 +101,6 @@ extern "C" fn stack_error_handler(thread_ptr: *mut threadx_sys::TX_THREAD_STRUCT
 #[no_mangle]
 extern "C" fn tx_application_define(_first_unused_memory: *mut core::ffi::c_void) {
     println_uart!("In tx_application_define()...");
-
-    // Register stack error notification handler
-    unsafe {
-        threadx_sys::_tx_thread_stack_error_notify(Some(stack_error_handler));
-    }
 
     // ThreadX requires a mutable pointer to a character array for object names,
     // which it retains internally. Use mutable static buffers to avoid casting
@@ -227,7 +110,6 @@ extern "C" fn tx_application_define(_first_unused_memory: *mut core::ffi::c_void
     static mut THREAD0_NAME: [u8; 16] = *b"producer\0\0\0\0\0\0\0\0";
     static mut THREAD1_NAME: [u8; 16] = *b"consumer\0\0\0\0\0\0\0\0";
     static mut MUTEX_NAME: [u8; 16] = *b"test-mutex\0\0\0\0\0\0";
-    static mut SEMA_NAME: [u8; 16] = *b"test-sema\0\0\0\0\0\0\0";
     static mut FLAGS_NAME: [u8; 16] = *b"test-flags\0\0\0\0\0\0";
     static mut QUEUE_NAME: [u8; 16] = *b"test-queue\0\0\0\0\0\0";
 
@@ -244,7 +126,7 @@ extern "C" fn tx_application_define(_first_unused_memory: *mut core::ffi::c_void
                 DEMO_POOL_SIZE as u32,
             );
             if res != threadx_sys::TX_SUCCESS {
-                panic!("Failed to create byte pool: {}", res);
+                panic!("byte pool create failed");
             }
             byte_pool.assume_init_mut()
         }
@@ -265,23 +147,10 @@ extern "C" fn tx_application_define(_first_unused_memory: *mut core::ffi::c_void
             threadx_sys::TX_INHERIT,
         );
         if res != threadx_sys::TX_SUCCESS {
-            panic!("Failed to create mutex: {}", res);
+            panic!("mutex create failed");
         }
         let mutex = mutex.assume_init_mut();
         MUTEX_PTR.store(mutex, core::sync::atomic::Ordering::Release);
-    }
-
-    // Semaphore (initial count 0)
-    unsafe {
-        let sema = TEST_SEMA.uninit();
-        let res = threadx_sys::_tx_semaphore_create(
-            sema.as_mut_ptr(),
-            core::ptr::addr_of_mut!(SEMA_NAME) as *mut threadx_sys::CHAR,
-            0,
-        );
-        if res != threadx_sys::TX_SUCCESS {
-            panic!("Failed to create semaphore: {}", res);
-        }
     }
 
     // Event flags (coordination between threads)
@@ -292,7 +161,7 @@ extern "C" fn tx_application_define(_first_unused_memory: *mut core::ffi::c_void
             core::ptr::addr_of_mut!(FLAGS_NAME) as *mut threadx_sys::CHAR,
         );
         if res != threadx_sys::TX_SUCCESS {
-            panic!("Failed to create event flags: {}", res);
+            panic!("event flags create failed");
         }
         let flags = flags.assume_init_mut();
         FLAGS_PTR.store(flags, core::sync::atomic::Ordering::Release);
@@ -310,7 +179,7 @@ extern "C" fn tx_application_define(_first_unused_memory: *mut core::ffi::c_void
             (4 * 4) as u32, // 4 slots * 4 bytes = 16 bytes
         );
         if res != threadx_sys::TX_SUCCESS {
-            panic!("Failed to create queue: {}", res);
+            panic!("queue create failed");
         }
         let queue = queue.assume_init_mut();
         QUEUE_PTR.store(queue, core::sync::atomic::Ordering::Release);
@@ -336,7 +205,7 @@ extern "C" fn tx_application_define(_first_unused_memory: *mut core::ffi::c_void
                 threadx_sys::TX_NO_WAIT,
             );
             if res != threadx_sys::TX_SUCCESS {
-                panic!("Failed to allocate stack: {}", res);
+                panic!("stack alloc failed");
             }
         }
         if stack_pointer.is_null() {
@@ -359,14 +228,14 @@ extern "C" fn tx_application_define(_first_unused_memory: *mut core::ffi::c_void
                 threadx_sys::TX_AUTO_START,
             );
             if res != threadx_sys::TX_SUCCESS {
-                panic!("Failed to create thread: {}", res);
+                panic!("thread create failed");
             }
             thread.assume_init_mut()
         }
     };
     println_uart!(
-        "Thread spawned: producer (pri=10) @ {:p}",
-        thread0 as *const _
+        "Thread spawned: producer (pri=10) @ 0x{:08x}",
+        thread0 as *const _ as usize
     );
 
     let thread1 = {
@@ -379,7 +248,7 @@ extern "C" fn tx_application_define(_first_unused_memory: *mut core::ffi::c_void
                 threadx_sys::TX_NO_WAIT,
             );
             if res != threadx_sys::TX_SUCCESS {
-                panic!("Failed to allocate stack: {}", res);
+                panic!("stack alloc failed");
             }
         }
         if stack_pointer.is_null() {
@@ -402,14 +271,14 @@ extern "C" fn tx_application_define(_first_unused_memory: *mut core::ffi::c_void
                 threadx_sys::TX_AUTO_START,
             );
             if res != threadx_sys::TX_SUCCESS {
-                panic!("Failed to create thread: {}", res);
+                panic!("thread create failed");
             }
             thread.assume_init_mut()
         }
     };
     println_uart!(
-        "Thread spawned: consumer (pri=5) @ {:p}",
-        thread1 as *const _
+        "Thread spawned: consumer (pri=5) @ 0x{:08x}",
+        thread1 as *const _ as usize
     );
 
     // Deterministic marker for smoke test validation.
@@ -439,14 +308,14 @@ extern "C" fn my_thread(role: u32) {
     unsafe {
         threadx_sys::_tx_thread_sleep(10);
     }
-    println_uart!("TICK_OK: {} resumed after sleep", name);
+    println_uart!("TICK_OK: resumed after sleep");
 
     // Load shared primitive pointers
     let queue = QUEUE_PTR.load(core::sync::atomic::Ordering::Acquire);
     let mutex = MUTEX_PTR.load(core::sync::atomic::Ordering::Acquire);
     let flags = FLAGS_PTR.load(core::sync::atomic::Ordering::Acquire);
     if queue.is_null() || mutex.is_null() || flags.is_null() {
-        panic!("{}: primitive pointer is null - init order broken", name);
+        panic!("primitive pointer null");
     }
 
     // Event flag bits for Scenario C coordination
@@ -462,7 +331,7 @@ extern "C" fn my_thread(role: u32) {
     // ============================================================
 
     if is_producer {
-        for i in 1..=PIPELINE_DEPTH {
+        for i in 1..PIPELINE_DEPTH + 1 {
             let res = unsafe {
                 threadx_sys::_tx_queue_send(
                     queue,
@@ -471,12 +340,12 @@ extern "C" fn my_thread(role: u32) {
                 )
             };
             if res != threadx_sys::TX_SUCCESS {
-                panic!("producer: queue send failed (msg {}): {}", i, res);
+                panic!("queue send failed");
             }
             println_uart!("producer: sent {}", i);
         }
     } else {
-        for expected in 1..=PIPELINE_DEPTH {
+        for expected in 1..PIPELINE_DEPTH + 1 {
             let mut received: u32 = 0;
             let res = unsafe {
                 threadx_sys::_tx_queue_receive(
@@ -486,13 +355,10 @@ extern "C" fn my_thread(role: u32) {
                 )
             };
             if res != threadx_sys::TX_SUCCESS {
-                panic!("consumer: queue recv failed (msg {}): {}", expected, res);
+                panic!("queue recv failed");
             }
             if received != expected {
-                panic!(
-                    "consumer: FIFO broken - expected {}, got {}",
-                    expected, received
-                );
+                panic!("FIFO order broken");
             }
             println_uart!("consumer: recv {}", received);
         }
@@ -529,13 +395,13 @@ extern "C" fn my_thread(role: u32) {
             )
         };
         if res != threadx_sys::TX_SUCCESS {
-            panic!("producer: wait for MTX_START failed: {}", res);
+            panic!("wait MTX_START failed");
         }
 
         // Acquire mutex
         let res = unsafe { threadx_sys::_tx_mutex_get(mutex, threadx_sys::TX_WAIT_FOREVER) };
         if res != threadx_sys::TX_SUCCESS {
-            panic!("producer: mutex get failed: {}", res);
+            panic!("producer mutex get failed");
         }
         println_uart!("MTX_HELD");
 
@@ -543,7 +409,7 @@ extern "C" fn my_thread(role: u32) {
         let res =
             unsafe { threadx_sys::_tx_event_flags_set(flags, FLAG_MTX_HELD, threadx_sys::TX_OR) };
         if res != threadx_sys::TX_SUCCESS {
-            panic!("producer: set FLAG_MTX_HELD failed: {}", res);
+            panic!("set MTX_HELD failed");
         }
 
         // Small sleep to let consumer attempt (and block on) the mutex.
@@ -563,14 +429,14 @@ extern "C" fn my_thread(role: u32) {
         // Release mutex
         let res = unsafe { threadx_sys::_tx_mutex_put(mutex) };
         if res != threadx_sys::TX_SUCCESS {
-            panic!("producer: mutex put failed: {}", res);
+            panic!("producer mutex put failed");
         }
     } else {
         // Signal producer to start mutex test
         let res =
             unsafe { threadx_sys::_tx_event_flags_set(flags, FLAG_MTX_START, threadx_sys::TX_OR) };
         if res != threadx_sys::TX_SUCCESS {
-            panic!("consumer: set FLAG_MTX_START failed: {}", res);
+            panic!("set MTX_START failed");
         }
 
         // Wait for producer to hold the mutex
@@ -585,28 +451,25 @@ extern "C" fn my_thread(role: u32) {
             )
         };
         if res != threadx_sys::TX_SUCCESS {
-            panic!("consumer: wait for MTX_HELD failed: {}", res);
+            panic!("wait MTX_HELD failed");
         }
 
         // Try to acquire mutex - this blocks because producer holds it.
         // ThreadX will boost producer's priority to ours (priority inheritance).
         let res = unsafe { threadx_sys::_tx_mutex_get(mutex, threadx_sys::TX_WAIT_FOREVER) };
         if res != threadx_sys::TX_SUCCESS {
-            panic!("consumer: mutex get failed: {}", res);
+            panic!("consumer mutex get failed");
         }
 
         // Verify shared counter integrity
         let count = SHARED_COUNTER.load(core::sync::atomic::Ordering::Relaxed);
         if count != MUTEX_ROUNDS {
-            panic!(
-                "consumer: counter mismatch - expected {}, got {} (mutual exclusion broken)",
-                MUTEX_ROUNDS, count
-            );
+            panic!("counter mismatch - mutual exclusion broken");
         }
 
         let res = unsafe { threadx_sys::_tx_mutex_put(mutex) };
         if res != threadx_sys::TX_SUCCESS {
-            panic!("consumer: mutex put failed: {}", res);
+            panic!("consumer mutex put failed");
         }
 
         println_uart!("MTX_OK");
@@ -631,7 +494,7 @@ pub extern "C" fn kmain() {
 
     // Initialize UART hardware
     let mut uart0 = unsafe { Uart::new_uart0() };
-    _ = writeln!(uart0, "Running ThreadX... (entry #{})", entry_count);
+    let _ = ufmt::uwriteln!(uart0, "Running ThreadX... (entry #{})", entry_count);
 
     // Initialize buffered UART system (interrupt-driven)
     unsafe {
@@ -652,7 +515,7 @@ pub extern "C" fn kmain() {
 
     // Debug: Check VIC state after Timer0
     let vic_inten_before = unsafe { ((VIC_BASE + 0x10) as *const u32).read_volatile() };
-    _ = writeln!(
+    let _ = ufmt::uwriteln!(
         uart0,
         "VIC INTENABLE after Timer0: 0x{:08x}",
         vic_inten_before
@@ -662,7 +525,7 @@ pub extern "C" fn kmain() {
 
     // Debug: Check VIC state after UART0
     let vic_inten_after = unsafe { ((VIC_BASE + 0x10) as *const u32).read_volatile() };
-    _ = writeln!(
+    let _ = ufmt::uwriteln!(
         uart0,
         "VIC INTENABLE after UART0: 0x{:08x}",
         vic_inten_after
@@ -707,24 +570,43 @@ unsafe extern "C" fn handle_interrupt() {
 /// Handles unrecoverable `panic!` calls in the application.
 ///
 /// Outputs the panic details to the console and exits QEMU using a semihosting
-/// breakpoint.
+/// breakpoint. Uses emergency UART bypass (no core::fmt dependency).
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    use core::fmt::Write;
-
-    // Use emergency UART bypass to avoid mutex deadlocks during panic
-    struct EmergencyWriter;
-    impl core::fmt::Write for EmergencyWriter {
-        fn write_str(&mut self, s: &str) -> core::fmt::Result {
-            unsafe {
-                Uart::<UART0_BASE>::emergency_write_str(s);
-            }
-            Ok(())
+    /// Write a u32 as decimal digits via emergency UART (no core::fmt).
+    unsafe fn emergency_write_u32(n: u32) {
+        if n == 0 {
+            Uart::<UART0_BASE>::emergency_write_str("0");
+            return;
         }
+        let mut buf = [0u8; 10];
+        let mut pos = 10usize;
+        let mut val = n;
+        while val > 0 {
+            pos -= 1;
+            buf[pos] = b'0' + (val % 10) as u8;
+            val /= 10;
+        }
+        Uart::<UART0_BASE>::emergency_write_str(core::str::from_utf8_unchecked(&buf[pos..]));
     }
 
-    let mut w = EmergencyWriter;
-    let _ = writeln!(w, "\r\nPANIC: {:?}", info);
+    unsafe {
+        Uart::<UART0_BASE>::emergency_write_str("\r\nPANIC: ");
+
+        if let Some(loc) = info.location() {
+            Uart::<UART0_BASE>::emergency_write_str(loc.file());
+            Uart::<UART0_BASE>::emergency_write_str(":");
+            emergency_write_u32(loc.line());
+        }
+
+        // All panics use static strings, so as_str() returns Some
+        if let Some(msg) = info.message().as_str() {
+            Uart::<UART0_BASE>::emergency_write_str(": ");
+            Uart::<UART0_BASE>::emergency_write_str(msg);
+        }
+
+        Uart::<UART0_BASE>::emergency_write_str("\r\n");
+    }
 
     const SYS_REPORTEXC: u32 = 0x18;
     loop {

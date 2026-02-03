@@ -20,12 +20,13 @@ exclude = [
 [workspace.metadata.xtask]
 # Marker: this workspace supports `cargo xtask` commands
 
-# Profile settings for embedded binary (moved from cortex-r5-sample)
+# Size-optimized release profile for embedded targets.
+# Debug info (DWARF) is kept: it lives in non-loadable ELF sections and
+# does not affect flash/RAM footprint on the target.
 [profile.release]
 codegen-units = 1
 debug = 2
-debug-assertions = true
 incremental = false
-lto = false
-opt-level = 1
-overflow-checks = true
+lto = "fat"
+opt-level = "z"
+panic = "abort"

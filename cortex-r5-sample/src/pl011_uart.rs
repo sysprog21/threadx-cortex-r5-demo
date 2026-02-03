@@ -116,8 +116,10 @@ impl<const ADDR: usize> Uart<ADDR> {
     }
 }
 
-impl<const N: usize> core::fmt::Write for Uart<N> {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+impl<const N: usize> ufmt::uWrite for Uart<N> {
+    type Error = core::convert::Infallible;
+
+    fn write_str(&mut self, s: &str) -> Result<(), Self::Error> {
         for b in s.bytes() {
             self.write(b);
         }

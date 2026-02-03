@@ -62,8 +62,6 @@
 //! | 0x22 | InvalidCeiling | Invalid ceiling value |
 //! | 0xFF | FeatureNotEnabled | Feature not compiled in |
 
-use core::fmt;
-
 /// ThreadX status codes mapped to a Rust enum.
 ///
 /// This enum represents all possible return values from ThreadX API functions.
@@ -285,19 +283,6 @@ impl From<TxStatus> for u32 {
     #[inline]
     fn from(status: TxStatus) -> Self {
         status.code()
-    }
-}
-
-impl fmt::Display for TxStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Use 08X to properly display Unknown (0xFFFF_FFFF) and any extended codes
-        write!(
-            f,
-            "TX_{:?} (0x{:08X}): {}",
-            self,
-            self.code(),
-            self.description()
-        )
     }
 }
 
