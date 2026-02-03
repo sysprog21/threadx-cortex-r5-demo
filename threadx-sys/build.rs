@@ -1,58 +1,77 @@
 //! Build Script for threadx-sys
 //!
-//! Calls out to bindgen to generate a Rust crate from the ThreadX header
-//! files.
+//! By default, uses pre-generated bindings from src/bindings.rs.
+//! Enable the `bindgen` feature to regenerate from ThreadX headers
+//! (requires libclang).
+//!
+//! After regenerating, copy the output to src/bindings.rs:
+//!   cp target/armv7r-none-eabihf/release/build/threadx-sys-*/out/bindings.rs threadx-sys/src/bindings.rs
 
 use std::env;
 use std::path::PathBuf;
 
 fn main() {
+    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap()).join("bindings.rs");
+
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=wrapper.h");
+    println!("cargo:rerun-if-changed=include");
+
+    #[cfg(feature = "bindgen")]
+    {
+        let threadx_common_inc = PathBuf::from("../threadx/common/inc");
+        let threadx_port_inc = PathBuf::from("../threadx/ports/cortex_r5/gnu/inc");
+        println!("cargo:rerun-if-changed={}", threadx_common_inc.display());
+        println!("cargo:rerun-if-changed={}", threadx_port_inc.display());
+        generate_bindings(&out_path);
+    }
+
+    #[cfg(not(feature = "bindgen"))]
+    {
+        let pregenerated = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
+            .join("src")
+            .join("bindings.rs");
+        println!("cargo:rerun-if-changed={}", pregenerated.display());
+        std::fs::copy(&pregenerated, &out_path).expect(
+            "Failed to copy pre-generated bindings. \
+             Enable the 'bindgen' feature to regenerate them.",
+        );
+    }
+}
+
+#[cfg(feature = "bindgen")]
+fn generate_bindings(out_path: &std::path::Path) {
     let threadx_path = PathBuf::from("../threadx");
-    // The bindgen::Builder is the main entry point
-    // to bindgen, and lets you build up options for
-    // the resulting bindings.
+
     let bindings = bindgen::Builder::default()
-        // The input header we would like to generate
-        // bindings for.
         .header("wrapper.h")
-        // Point to ThreadX headers
         .clang_arg(format!("-I{}", threadx_path.join("common/inc").display()))
         .clang_arg(format!(
             "-I{}",
             threadx_path.join("ports/cortex_r5/gnu/inc").display()
         ))
-        // Some fake local include files
         .clang_arg("-I./include")
-        // Disable standard includes (they belong to the host)
         .clang_arg("-nostdinc")
-        // Set the target
         .clang_arg("--target=arm")
         .clang_arg("-mthumb")
         .clang_arg("-mcpu=cortex-r5")
-        // Use hardfp
         .clang_arg("-mfloat-abi=hard")
-        // We're no_std
         .use_core()
-        // Include only the useful stuff
         .allowlist_function("tx_.*")
         .allowlist_function("_tx_.*")
         .allowlist_type("TX_.*")
         .allowlist_var("TX_.*")
         .allowlist_var("TX_AUTO_START")
-        // Format the output
         .formatter(bindgen::Formatter::Rustfmt)
-        // Finish the builder and generate the bindings.
         .generate()
-        // Unwrap the Result and panic on failure.
         .expect("Unable to generate bindings");
 
-    // Write the bindings to the $OUT_DIR/bindings.rs file.
-    let rust_source = bindings.to_string();
+    bindings
+        .write_to_file(out_path)
+        .expect("Couldn't write bindgen output");
 
-    let bindings_out_path = PathBuf::from(env::var("OUT_DIR").unwrap()).join("bindings.rs");
-    std::fs::write(bindings_out_path, rust_source).expect("Couldn't write updated bindgen output");
-
-    // The user will have to specify the path to the library themselves because
-    // they have to compile ThreadX themselves (or use a pre-compiled version).
-    // We only generate the API here.
+    eprintln!(
+        "Bindings generated at {:?}. Copy to threadx-sys/src/bindings.rs to update the pre-generated file.",
+        out_path
+    );
 }

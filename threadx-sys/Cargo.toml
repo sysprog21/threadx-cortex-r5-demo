@@ -8,5 +8,9 @@ authors = ["National Cheng Kung University"]
 
 [dependencies]
 
+[features]
+default = []
+bindgen = ["dep:bindgen"]
+
 [build-dependencies]
-bindgen = "0.69.5"
+bindgen = { version = "0.69.5", optional = true }
