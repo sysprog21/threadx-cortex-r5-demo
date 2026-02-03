@@ -17,6 +17,13 @@ smoke: all
 size: all
 	cargo run --manifest-path xtask/Cargo.toml -- size
 
+# Regenerate ThreadX FFI bindings (requires libclang)
+BINDGEN_OUT = target/armv7r-none-eabihf/release/build
+bindgen: threadx/common/inc/tx_api.h
+	cd cortex-r5-sample && cargo build --release --features threadx-sys/bindgen
+	cp $$(ls -t $$(find $(BINDGEN_OUT) -path '*/threadx-sys-*/out/bindings.rs') | head -1) \
+		threadx-sys/src/bindings.rs
+
 clean:
 	$(MAKE) -C cortex-r5-sample clean
 	cargo clean --manifest-path xtask/Cargo.toml 2>/dev/null || true
@@ -31,4 +38,4 @@ distclean: clean
 	rm -f xtask/Cargo.lock
 	-rm -rf threadx
 
-.PHONY: all run smoke size clean indent distclean
+.PHONY: all run smoke size bindgen clean indent distclean

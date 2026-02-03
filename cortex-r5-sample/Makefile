@@ -1,5 +1,5 @@
 PROFILE = release
-TARGET = target/armv7r-none-eabihf/$(PROFILE)/cortex-r5-sample
+TARGET = ../target/armv7r-none-eabihf/$(PROFILE)/cortex-r5-sample
 
 OPT_PROFILE = --$(PROFILE)
 
