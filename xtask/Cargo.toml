@@ -1,0 +1,9 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2021"
+description = "Build and test automation for ThreadX Cortex-R5 demo"
+publish = false
+
+[dependencies]
+anyhow = "1.0"
