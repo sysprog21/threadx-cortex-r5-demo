@@ -31,6 +31,31 @@ $ make bindgen
 This requires `libclang` to be installed.
 The updated bindings are written to `threadx-sys/src/bindings.rs` and should be committed.
 
+## Development
+
+The project uses [cargo xtask](https://github.com/matklad/cargo-xtask) for build automation:
+
+```shell
+$ cargo xtask run      # Build release binary and run on QEMU (interactive)
+$ cargo xtask smoke    # Marker-driven boot and runtime validation
+$ cargo xtask size     # Binary size breakdown (text/data/bss per object)
+$ cargo xtask help     # Show all commands and options
+```
+
+Makefile shortcuts are available for common operations:
+```shell
+$ make smoke           # Equivalent to cargo xtask smoke
+$ make size            # Equivalent to cargo xtask size
+```
+
+Environment variables:
+- `QEMU_TIMEOUT` - QEMU timeout in seconds (default: 30)
+- `QEMU_VERBOSE` - Show full UART output during smoke tests
+- `SMOKE_QUICK` - Skip slow markers for faster iteration
+
+The smoke test validates deterministic markers emitted during boot and runtime:
+`Running ThreadX` → `PRIMITIVES_OK` → `APP_READY` → `TICK_OK` → `PIPE_OK` → `MTX_OK`
+
 ## Licence
 
 This project is available under a permissive MIT-style license.
