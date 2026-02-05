@@ -3,6 +3,7 @@
 //! Usage:
 //!   cargo xtask run      # Build and run on QEMU
 //!   cargo xtask smoke    # Run QEMU smoke test (marker validation)
+//!   cargo xtask test     # Run host tests (compile-fail, doctests, unit tests)
 //!   cargo xtask size     # Print binary size breakdown
 //!   cargo xtask help     # Show this help
 //!
@@ -28,6 +29,7 @@ const ELF_PATH: &str = "target/armv7r-none-eabihf/release/cortex-r5-sample";
 /// Phase 4: Timer validation
 /// Phase 5: Producer-consumer pipeline (Scenario B)
 /// Phase 6: Mutex contention + priority inheritance (Scenario C)
+/// Phase 7: Lock-free SPSC ring + event flags (Scenario D)
 const MARKERS: &[&str] = &[
     // Phase 1: Initialization
     "Running ThreadX",       // kmain() entry
@@ -45,6 +47,8 @@ const MARKERS: &[&str] = &[
     // Phase 6: Mutex contention (Scenario C)
     "MTX_HELD", // Producer holds mutex under contention
     "MTX_OK",   // Mutual exclusion + priority inheritance verified
+    // Phase 7: Lock-free SPSC ring + event flags (Scenario D)
+    "SPSC_OK", // SPSC data integrity verified
 ];
 
 /// Failure patterns that indicate critical faults.
@@ -70,6 +74,7 @@ fn main() -> Result<()> {
     match cmd {
         "run" => qemu_run()?,
         "smoke" => qemu_smoke()?,
+        "test" => host_test()?,
         "size" => print_size()?,
         "help" | "--help" | "-h" => print_help(),
         _ => {
@@ -92,6 +97,7 @@ USAGE:
 COMMANDS:
     run      Build release binary and run on QEMU (interactive)
     smoke    Run QEMU smoke test with runtime validation
+    test     Run host tests (compile-fail, doctests, unit tests)
     size     Print binary size breakdown
     help     Show this help
 
@@ -100,13 +106,60 @@ ENVIRONMENT:
     QEMU_VERBOSE    Show full UART output
 
 SMOKE TEST MARKERS:
-    Running ThreadX → PRIMITIVES_OK → APP_READY → TICK_OK → PIPE_OK → MTX_OK
+    Running ThreadX → PRIMITIVES_OK → APP_READY → TICK_OK → PIPE_OK → MTX_OK → SPSC_OK
 
 EXAMPLES:
     cargo xtask smoke                  # Validate boot + runtime
+    cargo xtask test                   # Run host tests
     QEMU_VERBOSE=1 cargo xtask smoke   # Debug output
 "#
     );
+}
+
+/// Detect the host target triple via `rustc -vV`.
+fn host_triple() -> Result<String> {
+    let output = Command::new("rustc")
+        .args(["-vV"])
+        .output()
+        .context("Failed to run rustc -vV")?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if let Some(host) = line.strip_prefix("host: ") {
+            return Ok(host.to_string());
+        }
+    }
+    bail!("Could not determine host triple from rustc -vV");
+}
+
+/// Run host tests (compile-fail, doctests, unit tests).
+///
+/// The cortex-r5-sample/.cargo/config.toml forces the ARM target for embedded
+/// builds. Host tests need the native target to access std (required by dev
+/// dependencies like trybuild). This command handles the override automatically.
+fn host_test() -> Result<()> {
+    let host = host_triple()?;
+    eprintln!("[xtask] Running host tests (target: {})...", host);
+
+    let status = Command::new("cargo")
+        .args([
+            "test",
+            "-p",
+            "cortex-r5-sample",
+            "--no-default-features",
+            "--features",
+            "host-test",
+            "--target",
+            &host,
+        ])
+        .status()
+        .context("Failed to run cargo test")?;
+
+    if !status.success() {
+        bail!("Host tests failed");
+    }
+
+    eprintln!("[xtask] Host tests PASSED");
+    Ok(())
 }
 
 /// Build release binary using cargo
@@ -182,8 +235,8 @@ fn qemu_smoke() -> Result<()> {
     let quick_mode = std::env::var("SMOKE_QUICK").is_ok();
 
     // In quick mode, stop at APP_READY (init validation only)
-    // In full mode, stop at MTX_OK (full runtime + mutex contention validation)
-    let success_marker = if quick_mode { "APP_READY" } else { "MTX_OK" };
+    // In full mode, stop at SPSC_OK (full runtime + SPSC ring validation)
+    let success_marker = if quick_mode { "APP_READY" } else { "SPSC_OK" };
 
     eprintln!(
         "[xtask] Running smoke test (timeout: {}s, mode: {})...",

@@ -24,10 +24,10 @@
 //! use static_cell::StaticCell;
 //! use core::pin::Pin;
 //!
-//! static MUTEX_CTX: StaticCell<MutexContext> = StaticCell::new(MutexContext::new());
+//! static MUTEX_CTX: StaticCell<MutexContext> = StaticCell::new();
 //!
 //! // In tx_application_define:
-//! let ctx = unsafe { MUTEX_CTX.uninit().assume_init_mut() };
+//! let ctx = unsafe { &*MUTEX_CTX.uninit().assume_init_mut() };
 //! let pinned = unsafe { Pin::new_unchecked(ctx) };
 //!
 //! let mutex = Mutex::create(pinned, c"my-mutex", MutexOptions::default())
@@ -393,8 +393,8 @@ impl Drop for MutexGuard<'_> {
 ///     counter: u32,
 /// }
 ///
-/// static MUTEX_CTX: StaticCell<MutexContext> = StaticCell::new(MutexContext::new());
-/// static SHARED_DATA: StaticCell<SharedState> = StaticCell::new(SharedState { counter: 0 });
+/// static MUTEX_CTX: StaticCell<MutexContext> = StaticCell::new();
+/// static SHARED_DATA: StaticCell<SharedState> = StaticCell::new();
 ///
 /// // After creating mutex:
 /// // let mutex = Mutex::create(...);

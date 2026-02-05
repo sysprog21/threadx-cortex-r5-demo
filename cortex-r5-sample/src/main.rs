@@ -17,6 +17,7 @@ use static_cell::StaticCell;
 
 // Import safe UART logging macros
 use cortex_r5_sample::println_uart;
+use cortex_r5_sample::spsc::Spsc;
 
 /// ThreadX critical section implementation for single-core systems.
 ///
@@ -73,6 +74,15 @@ const PIPELINE_DEPTH: u32 = 5;
 
 // Scenario C: Mutex contention rounds (iterations under lock)
 const MUTEX_ROUNDS: u32 = 10;
+
+// Scenario D: Lock-free SPSC ring depth (messages pushed by producer)
+const SPSC_DEPTH: u32 = 8;
+
+// Lock-free SPSC ring for ISR-to-thread messaging demo.
+// In production, the ISR side would be a real interrupt handler pushing
+// sensor data, UART RX bytes, or DMA completion tokens. Here we demonstrate
+// the same pattern thread-to-thread since the producer API is identical.
+static SPSC_RING: Spsc<u32, 8> = Spsc::new();
 
 // Global primitives for runtime validation (initialized in tx_application_define)
 static TEST_MUTEX: StaticCell<threadx_sys::TX_MUTEX> = StaticCell::new();
@@ -321,6 +331,8 @@ extern "C" fn my_thread(role: u32) {
     // Event flag bits for Scenario C coordination
     const FLAG_MTX_START: u32 = 0x1;
     const FLAG_MTX_HELD: u32 = 0x2;
+    // Event flag bit for Scenario D (SPSC data ready)
+    const FLAG_SPSC_DATA: u32 = 0x4;
 
     // ============================================================
     // Scenario B: Producer-Consumer Pipeline
@@ -473,6 +485,70 @@ extern "C" fn my_thread(role: u32) {
         }
 
         println_uart!("MTX_OK");
+    }
+
+    // ============================================================
+    // Scenario D: Lock-Free SPSC Ring + Event Flags
+    // The canonical ISR-to-thread messaging pattern. Producer pushes
+    // data into a lock-free ring and signals via event flags. Consumer
+    // waits on the flag, then drains the ring without any locks.
+    //
+    // The producer side is ISR-safe: no blocking, no critical sections,
+    // just an atomic index update. Here we demonstrate thread-to-thread
+    // to validate the data path; the producer code is identical in ISR.
+    //
+    // Flow:
+    //   1. Consumer (pri=5) reaches here first, blocks on FLAG_SPSC_DATA
+    //   2. Producer (pri=10) pushes SPSC_DEPTH values, sets FLAG_SPSC_DATA
+    //   3. Consumer preempts, drains ring, verifies data integrity
+    // ============================================================
+
+    if is_producer {
+        for i in 1..=SPSC_DEPTH {
+            // push() is lock-free and ISR-safe (no critical section needed)
+            let res = unsafe { SPSC_RING.push(i) };
+            if res.is_err() {
+                panic!("spsc push failed: ring full");
+            }
+        }
+
+        // Signal consumer that data is ready (tx_event_flags_set is ISR-safe)
+        let res =
+            unsafe { threadx_sys::_tx_event_flags_set(flags, FLAG_SPSC_DATA, threadx_sys::TX_OR) };
+        if res != threadx_sys::TX_SUCCESS {
+            panic!("set SPSC_DATA flag failed");
+        }
+        println_uart!("producer: spsc sent {} values", SPSC_DEPTH);
+    } else {
+        // Wait for producer to signal data is ready
+        let mut actual: u32 = 0;
+        let res = unsafe {
+            threadx_sys::_tx_event_flags_get(
+                flags,
+                FLAG_SPSC_DATA,
+                threadx_sys::TX_AND_CLEAR,
+                &mut actual,
+                threadx_sys::TX_WAIT_FOREVER,
+            )
+        };
+        if res != threadx_sys::TX_SUCCESS {
+            panic!("wait SPSC_DATA flag failed");
+        }
+
+        // Drain the ring - pop until empty
+        let mut count: u32 = 0;
+        let mut sum: u32 = 0;
+        while let Some(val) = unsafe { SPSC_RING.pop() } {
+            count += 1;
+            sum += val;
+        }
+
+        // Verify: received all values and data integrity (1+2+...+N = N*(N+1)/2)
+        let expected_sum = SPSC_DEPTH * (SPSC_DEPTH + 1) / 2;
+        if count != SPSC_DEPTH || sum != expected_sum {
+            panic!("spsc data mismatch");
+        }
+        println_uart!("SPSC_OK");
     }
 
     // Park thread

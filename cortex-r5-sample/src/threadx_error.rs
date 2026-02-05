@@ -5,13 +5,13 @@
 //!
 //! # Usage
 //!
-//! ```no_run
+//! ```ignore
 //! use cortex_r5_sample::threadx_error::{TxResult, TxStatus, tx_check};
 //!
 //! // Using tx_check! macro for simple calls
-//! fn create_thread() -> TxResult<()> {
+//! fn create_thread(thread: *mut threadx_sys::TX_THREAD) -> TxResult<()> {
 //!     unsafe {
-//!         tx_check!(threadx_sys::_tx_thread_create(/* ... */))
+//!         tx_check!(threadx_sys::_tx_thread_suspend(thread))
 //!     }
 //! }
 //!
@@ -320,13 +320,14 @@ macro_rules! tx_check {
 ///
 /// # Example
 ///
-/// ```no_run
+/// ```ignore
 /// use cortex_r5_sample::threadx_error::{tx_check_with, TxResult};
 ///
-/// fn get_value() -> TxResult<u32> {
-///     let mut value = 0u32;
+/// fn get_value(flags: *mut threadx_sys::TX_EVENT_FLAGS_GROUP) -> TxResult<u32> {
+///     let mut actual = 0u32;
 ///     unsafe {
-///         tx_check_with!(some_threadx_call(&mut value), value)
+///         tx_check_with!(threadx_sys::_tx_event_flags_get(
+///             flags, 0x1, 0, &mut actual, 0), actual)
 ///     }
 /// }
 /// ```

@@ -25,4 +25,5 @@ pub mod thread;
 
 // Modules available in both host-test and embedded modes
 pub mod safe;
+pub mod spsc;
 pub mod threadx_error;

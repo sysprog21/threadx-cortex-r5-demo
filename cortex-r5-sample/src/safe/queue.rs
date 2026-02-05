@@ -25,16 +25,14 @@
 //! ```no_run
 //! use cortex_r5_sample::safe::queue::{Queue, QueueContext, QueueOptions, queue_storage_size};
 //! use static_cell::StaticCell;
-//! use tx_ffi::ULONG;
 //! use core::pin::Pin;
 //!
 //! // Queue context and storage for 16 u32 messages
-//! static QUEUE_CTX: StaticCell<QueueContext<u32>> = StaticCell::new(QueueContext::new());
-//! static STORAGE: StaticCell<[ULONG; queue_storage_size::<u32>(16)]> =
-//!     StaticCell::new([0; queue_storage_size::<u32>(16)]);
+//! static QUEUE_CTX: StaticCell<QueueContext<u32>> = StaticCell::new();
+//! static STORAGE: StaticCell<[u32; queue_storage_size::<u32>(16)]> = StaticCell::new();
 //!
 //! // In tx_application_define:
-//! let ctx = unsafe { QUEUE_CTX.uninit().assume_init_mut() };
+//! let ctx = unsafe { &*QUEUE_CTX.uninit().assume_init_mut() };
 //! let storage = unsafe { STORAGE.uninit().assume_init_mut() };
 //! let pinned = unsafe { Pin::new_unchecked(ctx) };
 //!
@@ -203,10 +201,9 @@ impl<T: Copy> QueueContext<T> {
 ///
 /// ```no_run
 /// use cortex_r5_sample::safe::queue::queue_storage_size;
-/// use tx_ffi::ULONG;
 ///
-/// // Storage for 16 u32 messages
-/// static STORAGE: [ULONG; queue_storage_size::<u32>(16)] = [0; queue_storage_size::<u32>(16)];
+/// // Storage for 16 u32 messages (ULONG = u32)
+/// static STORAGE: [u32; queue_storage_size::<u32>(16)] = [0; queue_storage_size::<u32>(16)];
 /// ```
 pub const fn queue_storage_size<T>(capacity: usize) -> usize {
     msg_words::<T>() * capacity
@@ -277,14 +274,12 @@ impl<T: Copy> Queue<T> {
     /// ```no_run
     /// use cortex_r5_sample::safe::queue::{Queue, QueueContext, QueueOptions, queue_storage_size};
     /// use static_cell::StaticCell;
-    /// use tx_ffi::ULONG;
     /// use core::pin::Pin;
     ///
-    /// static QUEUE_CTX: StaticCell<QueueContext<u32>> = StaticCell::new(QueueContext::new());
-    /// static STORAGE: StaticCell<[ULONG; queue_storage_size::<u32>(16)]> =
-    ///     StaticCell::new([0; queue_storage_size::<u32>(16)]);
+    /// static QUEUE_CTX: StaticCell<QueueContext<u32>> = StaticCell::new();
+    /// static STORAGE: StaticCell<[u32; queue_storage_size::<u32>(16)]> = StaticCell::new();
     ///
-    /// let ctx = unsafe { QUEUE_CTX.uninit().assume_init_mut() };
+    /// let ctx = unsafe { &*QUEUE_CTX.uninit().assume_init_mut() };
     /// let storage = unsafe { STORAGE.uninit().assume_init_mut() };
     /// let pinned = unsafe { Pin::new_unchecked(ctx) };
     ///

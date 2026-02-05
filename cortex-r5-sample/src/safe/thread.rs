@@ -24,15 +24,15 @@
 //! use static_cell::StaticCell;
 //! use core::pin::Pin;
 //!
-//! static THREAD_CTX: StaticCell<ThreadContext> = StaticCell::new(ThreadContext::new());
-//! static STACK: StaticCell<[u8; 4096]> = StaticCell::new([0u8; 4096]);
+//! static THREAD_CTX: StaticCell<ThreadContext> = StaticCell::new();
+//! static STACK: StaticCell<[u8; 4096]> = StaticCell::new();
 //!
 //! unsafe extern "C" fn my_entry(_: u32) {
-//!     loop { tx_ffi::_tx_thread_sleep(100); }
+//!     loop { unsafe { threadx_sys::_tx_thread_sleep(100); } }
 //! }
 //!
 //! // In tx_application_define:
-//! let ctx = unsafe { THREAD_CTX.uninit().assume_init_mut() };
+//! let ctx = unsafe { &*THREAD_CTX.uninit().assume_init_mut() };
 //! let stack = unsafe { STACK.uninit().assume_init_mut() };
 //! let pinned = unsafe { Pin::new_unchecked(ctx) };
 //!
@@ -172,7 +172,7 @@ impl ThreadContext {
     /// use static_cell::StaticCell;
     /// use cortex_r5_sample::safe::thread::ThreadContext;
     ///
-    /// static THREAD_CTX: StaticCell<ThreadContext> = StaticCell::new(ThreadContext::new());
+    /// static THREAD_CTX: StaticCell<ThreadContext> = StaticCell::new();
     /// ```
     pub const fn new() -> Self {
         Self {
@@ -287,12 +287,14 @@ impl Thread {
     /// use static_cell::StaticCell;
     /// use core::pin::Pin;
     ///
-    /// static THREAD_CTX: StaticCell<ThreadContext> = StaticCell::new(ThreadContext::new());
-    /// static STACK: StaticCell<[u8; 4096]> = StaticCell::new([0u8; 4096]);
+    /// static THREAD_CTX: StaticCell<ThreadContext> = StaticCell::new();
+    /// static STACK: StaticCell<[u8; 4096]> = StaticCell::new();
     ///
-    /// unsafe extern "C" fn entry(_: u32) { loop { tx_ffi::_tx_thread_sleep(100); } }
+    /// unsafe extern "C" fn entry(_: u32) {
+    ///     loop { unsafe { threadx_sys::_tx_thread_sleep(100); } }
+    /// }
     ///
-    /// let ctx = unsafe { THREAD_CTX.uninit().assume_init_mut() };
+    /// let ctx = unsafe { &*THREAD_CTX.uninit().assume_init_mut() };
     /// let stack = unsafe { STACK.uninit().assume_init_mut() };
     /// let pinned = unsafe { Pin::new_unchecked(ctx) };
     ///

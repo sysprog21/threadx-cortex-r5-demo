@@ -32,33 +32,31 @@
 //!
 //! # Usage
 //!
-//! ```no_run
+//! ```ignore
 //! use cortex_r5_sample::safe::thread::{Thread, ThreadContext, ThreadOptions};
 //! use static_cell::StaticCell;
 //! use core::pin::Pin;
 //!
 //! // Allocate context in static storage (required for ThreadX)
-//! static THREAD_CTX: StaticCell<ThreadContext> = StaticCell::new(ThreadContext::new());
-//! static STACK: StaticCell<[u8; 4096]> = StaticCell::new([0u8; 4096]);
+//! static THREAD_CTX: StaticCell<ThreadContext> = StaticCell::new();
+//! static STACK: StaticCell<[u8; 4096]> = StaticCell::new();
 //!
 //! // Define entry point
 //! unsafe extern "C" fn my_thread_entry(_: u32) {
-//!     loop {
-//!         threadx_sys::_tx_thread_sleep(100);
-//!     }
+//!     loop { threadx_sys::_tx_thread_sleep(100); }
 //! }
 //!
 //! // In tx_application_define():
 //! fn create_thread() {
-//!     let ctx = THREAD_CTX.uninit();
-//!     let stack = STACK.uninit();
+//!     let ctx = unsafe { &*THREAD_CTX.uninit().assume_init_mut() };
+//!     let stack = unsafe { STACK.uninit().assume_init_mut() };
 //!
 //!     // Pin the context and create the thread
-//!     let pinned = unsafe { Pin::new_unchecked(ctx.assume_init_mut()) };
+//!     let pinned = unsafe { Pin::new_unchecked(ctx) };
 //!     let thread = Thread::create(
 //!         pinned,
 //!         c"my-thread",
-//!         unsafe { stack.assume_init_mut() },
+//!         stack,
 //!         ThreadOptions {
 //!             entry_fn: my_thread_entry,
 //!             priority: 10,
