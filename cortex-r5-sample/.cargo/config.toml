@@ -1,9 +1,9 @@
 [target.armv7r-none-eabihf]
 rustflags = [
-    "-Clink-arg=-Tlinker.ld",
     "-Ctarget-cpu=cortex-r5",
 ]
-runner = "qemu-system-arm -machine versatileab -cpu cortex-r5f -semihosting -nographic -kernel"
+# No runner configured here -- use `make run` or `make BOARD=zynqmp run`
+# to select the correct QEMU for the target board.
 
 [build]
 target = ["armv7r-none-eabihf"]

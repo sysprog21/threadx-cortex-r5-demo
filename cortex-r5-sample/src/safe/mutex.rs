@@ -280,18 +280,13 @@ impl Mutex {
                 mutex: self,
                 _not_send: core::marker::PhantomData,
             }),
-            tx_ffi::TX_NOT_AVAILABLE => Err(LockError::WouldBlock),
+            // TX_NOT_AVAILABLE: try_lock failed (TX_NO_WAIT) or timed out
+            tx_ffi::TX_NOT_AVAILABLE if timeout == tx_ffi::TX_NO_WAIT => Err(LockError::WouldBlock),
+            tx_ffi::TX_NOT_AVAILABLE => Err(LockError::Timeout),
             tx_ffi::TX_WAIT_ABORTED => Err(LockError::WaitAborted),
-            tx_ffi::TX_MUTEX_ERROR => Err(LockError::Deleted),
-            tx_ffi::TX_CALLER_ERROR => Err(LockError::InvalidCaller),
-            _ => {
-                // Check if it was a timeout (non-success with timeout specified)
-                if timeout != tx_ffi::TX_WAIT_FOREVER && timeout != tx_ffi::TX_NO_WAIT {
-                    Err(LockError::Timeout)
-                } else {
-                    Err(LockError::ThreadXError(result))
-                }
-            }
+            tx_ffi::TX_DELETED => Err(LockError::Deleted),
+            tx_ffi::TX_WAIT_ERROR | tx_ffi::TX_CALLER_ERROR => Err(LockError::InvalidCaller),
+            _ => Err(LockError::ThreadXError(result)),
         }
     }
 
@@ -426,9 +421,14 @@ impl<'a, T> DataMutex<'a, T> {
     }
 
     /// Acquires the mutex and returns a guard for accessing the data.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the current thread already holds this mutex (recursive lock).
+    /// ThreadX mutexes are recursive by default, but allowing recursion here
+    /// would create multiple `&mut T` references, violating Rust aliasing rules.
     pub fn lock(&self) -> Result<DataGuard<'_, T>, LockError> {
-        // Acquire the lock - the MutexGuard is stored in DataGuard to ensure
-        // proper unlock on drop (fixes double-unlock bug)
+        self.assert_not_recursive();
         let guard = self.mutex.lock()?;
         Ok(DataGuard {
             _guard: guard,
@@ -437,14 +437,36 @@ impl<'a, T> DataMutex<'a, T> {
     }
 
     /// Attempts to acquire the mutex without blocking.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the current thread already holds this mutex.
     pub fn try_lock(&self) -> Result<DataGuard<'_, T>, LockError> {
-        // Acquire the lock - the MutexGuard is stored in DataGuard to ensure
-        // proper unlock on drop (fixes double-unlock bug)
+        self.assert_not_recursive();
         let guard = self.mutex.try_lock()?;
         Ok(DataGuard {
             _guard: guard,
             data: &self.data,
         })
+    }
+
+    /// Panics if the current thread already owns the mutex.
+    ///
+    /// ThreadX allows recursive locking, but that would let safe code
+    /// obtain multiple `&mut T` through separate `DataGuard`s -- UB.
+    fn assert_not_recursive(&self) {
+        // Read owner inside critical section to avoid racing with ThreadX
+        // lock/unlock operations that concurrently mutate tx_mutex_owner.
+        critical_section::with(|_| unsafe {
+            let owner = (*self.mutex.as_ptr()).tx_mutex_owner;
+            if !owner.is_null() {
+                let current = tx_ffi::_tx_thread_identify();
+                assert!(
+                    owner != current,
+                    "DataMutex: recursive lock would create aliased &mut T"
+                );
+            }
+        });
     }
 }
 

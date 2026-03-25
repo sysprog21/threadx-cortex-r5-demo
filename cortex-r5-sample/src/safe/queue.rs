@@ -385,7 +385,7 @@ impl<T: Copy> Queue<T> {
             )
         };
 
-        Self::map_send_result(result, timeout)
+        Self::map_result(result, timeout)
     }
 
     /// Sends a message to the front of the queue (highest priority).
@@ -421,24 +421,25 @@ impl<T: Copy> Queue<T> {
             )
         };
 
-        Self::map_send_result(result, timeout)
+        Self::map_result(result, timeout)
     }
 
-    /// Helper to map ThreadX send results
-    fn map_send_result(result: UINT, timeout: ULONG) -> Result<(), QueueError> {
+    /// Map a ThreadX queue operation result to QueueError.
+    ///
+    /// Handles both send and receive error codes. TX_QUEUE_FULL and TX_QUEUE_EMPTY
+    /// are capacity errors mapped by their respective callers before calling this.
+    fn map_result(result: UINT, timeout: ULONG) -> Result<(), QueueError> {
         match result {
             tx_ffi::TX_SUCCESS => Ok(()),
-            tx_ffi::TX_QUEUE_FULL => Err(QueueError::Full),
+            // TX_QUEUE_FULL / TX_QUEUE_EMPTY: non-blocking attempt failed or timed out
+            tx_ffi::TX_QUEUE_FULL if timeout == tx_ffi::TX_NO_WAIT => Err(QueueError::Full),
+            tx_ffi::TX_QUEUE_FULL => Err(QueueError::Timeout),
+            tx_ffi::TX_QUEUE_EMPTY if timeout == tx_ffi::TX_NO_WAIT => Err(QueueError::Empty),
+            tx_ffi::TX_QUEUE_EMPTY => Err(QueueError::Timeout),
             tx_ffi::TX_WAIT_ABORTED => Err(QueueError::WaitAborted),
-            tx_ffi::TX_QUEUE_ERROR => Err(QueueError::Deleted),
-            tx_ffi::TX_CALLER_ERROR => Err(QueueError::InvalidCaller),
-            _ => {
-                if timeout != tx_ffi::TX_WAIT_FOREVER && timeout != tx_ffi::TX_NO_WAIT {
-                    Err(QueueError::Timeout)
-                } else {
-                    Err(QueueError::ThreadXError(result))
-                }
-            }
+            tx_ffi::TX_DELETED => Err(QueueError::Deleted),
+            tx_ffi::TX_WAIT_ERROR | tx_ffi::TX_CALLER_ERROR => Err(QueueError::InvalidCaller),
+            _ => Err(QueueError::ThreadXError(result)),
         }
     }
 
@@ -470,7 +471,6 @@ impl<T: Copy> Queue<T> {
         };
 
         if result == tx_ffi::TX_SUCCESS {
-            // Copy from buffer to dest
             unsafe {
                 let src = buffer.as_ptr() as *const u8;
                 let dst = dest as *mut T as *mut u8;
@@ -478,25 +478,7 @@ impl<T: Copy> Queue<T> {
             }
             Ok(())
         } else {
-            Self::map_receive_result(result, timeout)
-        }
-    }
-
-    /// Helper to map ThreadX receive results
-    fn map_receive_result(result: UINT, timeout: ULONG) -> Result<(), QueueError> {
-        match result {
-            tx_ffi::TX_SUCCESS => Ok(()), // Should be handled by caller
-            tx_ffi::TX_QUEUE_EMPTY => Err(QueueError::Empty),
-            tx_ffi::TX_WAIT_ABORTED => Err(QueueError::WaitAborted),
-            tx_ffi::TX_QUEUE_ERROR => Err(QueueError::Deleted),
-            tx_ffi::TX_CALLER_ERROR => Err(QueueError::InvalidCaller),
-            _ => {
-                if timeout != tx_ffi::TX_WAIT_FOREVER && timeout != tx_ffi::TX_NO_WAIT {
-                    Err(QueueError::Timeout)
-                } else {
-                    Err(QueueError::ThreadXError(result))
-                }
-            }
+            Self::map_result(result, timeout)
         }
     }
 

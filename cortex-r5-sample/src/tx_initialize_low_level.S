@@ -8,6 +8,7 @@
 @ * SPDX-License-Identifier: MIT
 @ **************************************************************************/
 
+    .arch   armv7-r                         @ Required for UBFX instruction
     .arm
 
 SVC_MODE        =       0xD3                    @ Disable IRQ/FIQ SVC mode
@@ -17,10 +18,40 @@ ABT_MODE        =       0xD7                    @ Disable IRQ/FIQ ABT mode
 UND_MODE        =       0xDB                    @ Disable IRQ/FIQ UND mode
 SYS_MODE        =       0xDF                    @ Disable IRQ/FIQ SYS mode
 FIQ_STACK_SIZE  =       512                     @ FIQ stack size
-IRQ_STACK_SIZE  =       1024                    @ IRQ stack size
+IRQ_STACK_SIZE  =       2048                    @ IRQ stack size (Rust ISR needs headroom)
 ABT_STACK_SIZE  =       512                     @ Abort stack size
 UND_STACK_SIZE  =       512                     @ Undefined stack size
 SYS_STACK_SIZE  =       1024                    @ System stack size
+
+#ifdef ZYNQMP
+
+@ Guard against unsupported configurations that would break deferred EOI.
+@ These checks catch defines set via tx_user.h or compiler flags that
+@ Cargo feature guards in build.rs cannot see.
+#ifdef TX_ENABLE_IRQ_NESTING
+#error "ZynqMP: IRQ nesting not supported - _tx_gic_iar has no per-level storage"
+#endif
+#ifdef TX_ENABLE_SMP_SUPPORT
+#error "ZynqMP: SMP not supported - _tx_gic_iar has no per-core tracking"
+#endif
+
+@ ZynqMP GIC Configuration (LOCKSTEP MODE ONLY)
+@
+@ This code targets Cortex-R5 in lockstep mode exclusively.
+@ Split mode (dual independent R5 cores) is NOT supported because
+@ _tx_irq_iar is a single global variable with no per-core tracking.
+@
+@ Note: GICC_EOIR is handled by upstream tx_thread_context_restore.S with TX_GIC_DEFERRED_EOI
+GICC_BASE       =       0xF9020000              @ GIC CPU Interface base
+GICC_IAR        =       0x0C                    @ Interrupt Acknowledge Register offset
+SPURIOUS_MIN    =       1020                    @ GICv2: IRQ IDs 1020-1023 are special
+
+    .data
+    .align  4
+    .global _tx_gic_iar
+_tx_gic_iar:
+    .word   0x3FF                               @ Init to spurious (1023) to skip EOI on first context switch
+#endif
 
     .global     _tx_thread_system_stack_ptr
     .global     _tx_initialize_unused_memory
@@ -182,11 +213,30 @@ __tx_reserved_handler:
     B       __tx_reserved_handler               @ Reserved exception handler
 @
     .global __tx_irq_handler
-    .global __tx_irq_processing_return      
+    .global __tx_irq_processing_return
 __tx_irq_handler:
 @
+#ifdef ZYNQMP
+@    /* ZynqMP: Read GICC_IAR early to acknowledge interrupt.
+@       Store full IAR value for deferred EOI in context_restore.
+@       This closes the race window between EOI and CPSID. */
+    STMDB   sp!, {r0-r2}                        @ Save scratch registers
+    LDR     r0, =GICC_BASE
+    LDR     r1, [r0, #GICC_IAR]                 @ Acknowledge, get full IAR
+    UBFX    r2, r1, #0, #10                     @ Extract interrupt ID (bits 0-9)
+    CMP     r2, #SPURIOUS_MIN
+    BGE     __tx_irq_spurious                   @ ID >= 1020 is special, skip
+    LDR     r0, =_tx_gic_iar
+    STR     r1, [r0]                            @ Save full IAR for EOI
+    LDMIA   sp!, {r0-r2}                        @ Restore scratch registers
+    B       _tx_thread_context_save             @ Continue to context save
+__tx_irq_spurious:
+    LDMIA   sp!, {r0-r2}                        @ Restore scratch registers
+    SUBS    pc, lr, #4                          @ Return from IRQ, no EOI for spurious
+#else
 @    /* Jump to context save to save system context.  */
     B       _tx_thread_context_save
+#endif
 __tx_irq_processing_return:
 @
 @    /* At this point execution is still in the IRQ mode.  The CPSR, point of

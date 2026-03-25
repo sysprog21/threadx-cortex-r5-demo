@@ -3,7 +3,11 @@
 //! Provides diagnostic fault handlers for hardware exceptions that occur outside
 //! Rust's panic machinery (misaligned access, invalid instructions, MMU violations).
 
+// Board-specific imports (zynqmp takes precedence if both are enabled)
+#[cfg(all(feature = "versatileab", not(feature = "zynqmp")))]
 use crate::config::UART0_BASE;
+#[cfg(feature = "zynqmp")]
+use crate::config_zynqmp::UART0_BASE;
 
 /// Helper: Calculate length of C string with safety bound
 ///
@@ -17,10 +21,106 @@ unsafe fn c_strlen_safe(s: *const u8, max: usize) -> usize {
     len
 }
 
-/// RAM range check for basic sanity validation
-/// QEMU VersatileAB has 16MB RAM starting at 0x0
-const RAM_START: usize = 0x0000_0000;
-const RAM_END: usize = 0x0100_0000;
+/// Check if a pointer falls within a valid RAM region.
+///
+/// Used by fault handlers to avoid dereferencing MMIO or unmapped addresses
+/// during crash diagnostics, which would trigger a recursive abort.
+#[inline]
+fn is_valid_ram_range(addr: usize, len: usize) -> bool {
+    if len == 0 {
+        return false;
+    }
+    let Some(end) = addr.checked_add(len - 1) else {
+        return false;
+    };
+
+    #[cfg(all(feature = "versatileab", not(feature = "zynqmp")))]
+    {
+        // QEMU VersatileAB: 16MB flat RAM at 0x0
+        end < 0x0100_0000
+    }
+    #[cfg(feature = "zynqmp")]
+    {
+        use crate::config_zynqmp::*;
+        // DDR:  0x0000_0000 .. 0x7FFF_FFFF (2GB)
+        // ATCM: 0xFFE0_0000 .. 0xFFE0_FFFF (64K)
+        // BTCM: 0xFFE2_0000 .. 0xFFE2_FFFF (64K)
+        // OCM:  0xFFFC_0000 .. 0xFFFF_FFFF (256K)
+        (end < DDR_BASE + DDR_SIZE)
+            || (addr >= ATCM_BASE && end < ATCM_BASE + ATCM_SIZE)
+            || (addr >= BTCM_BASE && end < BTCM_BASE + BTCM_SIZE)
+            || (addr >= OCM_BASE && (end - OCM_BASE) < OCM_SIZE)
+    }
+}
+
+unsafe fn write_thread_name(thread: *mut threadx_sys::TX_THREAD) {
+    const MAX_THREAD_NAME_LEN: usize = 32;
+
+    let thread_valid = !thread.is_null()
+        && is_valid_ram_range(
+            thread as usize,
+            core::mem::size_of::<threadx_sys::TX_THREAD>(),
+        )
+        && (thread as usize & (core::mem::align_of::<threadx_sys::TX_THREAD>() - 1)) == 0;
+
+    if !thread_valid {
+        emergency_write("Thread: <none/invalid>\n");
+        return;
+    }
+
+    let name_ptr = (*thread).tx_thread_name;
+    if name_ptr.is_null() || !is_valid_ram_range(name_ptr as usize, MAX_THREAD_NAME_LEN) {
+        emergency_write("Thread: <invalid-name>\n");
+        return;
+    }
+
+    let name_len = c_strlen_safe(name_ptr as *const u8, MAX_THREAD_NAME_LEN);
+    let name_bytes = core::slice::from_raw_parts(name_ptr as *const u8, name_len);
+    if let Ok(s) = core::str::from_utf8(name_bytes) {
+        emergency_write("Thread: ");
+        emergency_write(s);
+        emergency_write("\n");
+    } else {
+        emergency_write("Thread: <invalid-utf8>\n");
+    }
+}
+
+/// Board-agnostic emergency UART write function.
+///
+/// # Safety
+/// Safe to call from fault handlers - uses direct MMIO, no locks.
+#[inline(always)]
+unsafe fn emergency_write(s: &str) {
+    #[cfg(all(feature = "versatileab", not(feature = "zynqmp")))]
+    {
+        use crate::pl011_uart::Uart;
+        Uart::<UART0_BASE>::emergency_write_str(s);
+    }
+    #[cfg(feature = "zynqmp")]
+    {
+        use crate::cadence_uart::CadenceUart;
+        CadenceUart::<UART0_BASE>::emergency_write_str(s);
+    }
+}
+
+/// Halt the system via semihosting exit.
+///
+/// Uses the same mechanism as the panic handler to cleanly terminate QEMU
+/// instead of spinning forever, which would hang CI pipelines.
+fn halt_system() -> ! {
+    const SYS_REPORTEXC: u32 = 0x18;
+    // ADP_Stopped_InternalError (0x20024) signals abnormal exit
+    const ADP_STOPPED_INTERNAL_ERROR: u32 = 0x20024;
+    loop {
+        unsafe {
+            core::arch::asm!(
+                "svc 0x123456",
+                in("r0") SYS_REPORTEXC,
+                in("r1") ADP_STOPPED_INTERNAL_ERROR,
+            );
+        }
+    }
+}
 
 /// Format a u32 as 8-digit uppercase hex into buf after prefix, followed by newline.
 ///
@@ -42,60 +142,70 @@ fn format_hex<'a>(buf: &'a mut [u8], prefix: &str, value: u32) -> &'a str {
     unsafe { core::str::from_utf8_unchecked(&buf[..need]) }
 }
 
+/// Read a CP15 coprocessor register.
+macro_rules! read_cp15 {
+    ($crn:literal, $crm:literal, $op2:literal) => {{
+        let value: u32;
+        unsafe {
+            core::arch::asm!(
+                concat!("mrc p15, 0, {}, ", $crn, ", ", $crm, ", ", $op2),
+                out(reg) value,
+                options(nostack, nomem)
+            );
+        }
+        value
+    }};
+}
+
 /// Data Fault Address Register (CP15 c6, c0, 0)
 #[inline(always)]
 fn read_dfar() -> u32 {
-    let value: u32;
-    unsafe {
-        core::arch::asm!(
-            "mrc p15, 0, {}, c6, c0, 0",
-            out(reg) value,
-            options(nostack, nomem)
-        );
-    }
-    value
+    read_cp15!("c6", "c0", "0")
 }
 
 /// Data Fault Status Register (CP15 c5, c0, 0)
 #[inline(always)]
 fn read_dfsr() -> u32 {
-    let value: u32;
-    unsafe {
-        core::arch::asm!(
-            "mrc p15, 0, {}, c5, c0, 0",
-            out(reg) value,
-            options(nostack, nomem)
-        );
-    }
-    value
+    read_cp15!("c5", "c0", "0")
 }
 
 /// Instruction Fault Address Register (CP15 c6, c0, 2)
 #[inline(always)]
 fn read_ifar() -> u32 {
-    let value: u32;
-    unsafe {
-        core::arch::asm!(
-            "mrc p15, 0, {}, c6, c0, 2",
-            out(reg) value,
-            options(nostack, nomem)
-        );
-    }
-    value
+    read_cp15!("c6", "c0", "2")
 }
 
 /// Instruction Fault Status Register (CP15 c5, c0, 1)
 #[inline(always)]
 fn read_ifsr() -> u32 {
-    let value: u32;
-    unsafe {
-        core::arch::asm!(
-            "mrc p15, 0, {}, c5, c0, 1",
-            out(reg) value,
-            options(nostack, nomem)
-        );
+    read_cp15!("c5", "c0", "1")
+}
+
+/// Decode ARM fault status register (combines bits [3:0] with bit 10).
+#[inline]
+fn decode_fault_status(fsr: u32) -> u32 {
+    (fsr & 0xF) | ((fsr & 0x400) >> 6)
+}
+
+/// Emit a fault report via emergency UART and halt.
+///
+/// Prints the banner, PC, optional fault registers, current thread name,
+/// and terminates via semihosting.
+unsafe fn report_fault(banner: &str, trailer: &str, pc: u32, regs: &[(&str, u32)]) -> ! {
+    let thread = threadx_sys::_tx_thread_identify();
+
+    emergency_write(banner);
+
+    let mut buf = [0u8; 64];
+    emergency_write(format_hex(&mut buf, "PC:            0x", pc));
+    for &(label, value) in regs {
+        emergency_write(format_hex(&mut buf, label, value));
     }
-    value
+
+    write_thread_name(thread);
+    emergency_write(trailer);
+
+    halt_system();
 }
 
 /// Data Abort Exception Handler
@@ -105,65 +215,23 @@ fn read_ifsr() -> u32 {
 ///
 /// # Parameters
 /// - `pc`: Faulting instruction address (LR - 8, adjusted by assembly)
-///
-/// # Safety
-/// This is an exception handler called directly from the vector table.
-/// Must never return.
 #[no_mangle]
 pub extern "C" fn data_abort_handler(pc: u32) -> ! {
     let dfar = read_dfar();
     let dfsr = read_dfsr();
+    let status = decode_fault_status(dfsr);
 
-    // Decode fault status (bits [3:0] and bit 10)
-    let status = (dfsr & 0xF) | ((dfsr & 0x400) >> 6);
-
-    // Try to identify current thread for better diagnostics
-    let thread = unsafe { threadx_sys::_tx_thread_identify() };
-
-    // Log fault details using emergency UART (bypasses all locks)
     unsafe {
-        use crate::pl011_uart::Uart;
-
-        Uart::<UART0_BASE>::emergency_write_str("\n=== DATA ABORT ===\n");
-
-        let mut buf = [0u8; 64];
-        Uart::<UART0_BASE>::emergency_write_str(format_hex(&mut buf, "PC:            0x", pc));
-        Uart::<UART0_BASE>::emergency_write_str(format_hex(&mut buf, "Fault Address: 0x", dfar));
-        Uart::<UART0_BASE>::emergency_write_str(format_hex(&mut buf, "Fault Status:  0x", dfsr));
-        Uart::<UART0_BASE>::emergency_write_str(format_hex(&mut buf, " (type=0x", status));
-
-        // Safety checks for thread pointer to avoid nested faults
-        if !thread.is_null()
-            && (thread as usize) >= RAM_START
-            && (thread as usize) < RAM_END
-            && (thread as usize & 0x3) == 0
-        {
-            let name_ptr = (*thread).tx_thread_name;
-            if !name_ptr.is_null()
-                && (name_ptr as usize) >= RAM_START
-                && (name_ptr as usize) < RAM_END
-            {
-                Uart::<UART0_BASE>::emergency_write_str("Thread: ");
-                // Bounded string read to prevent infinite loop on corrupted data
-                let name_bytes = core::slice::from_raw_parts(
-                    name_ptr as *const u8,
-                    c_strlen_safe(name_ptr as *const u8, 32),
-                );
-                if let Ok(s) = core::str::from_utf8(name_bytes) {
-                    Uart::<UART0_BASE>::emergency_write_str(s);
-                    Uart::<UART0_BASE>::emergency_write_str("\n");
-                }
-            }
-        } else {
-            Uart::<UART0_BASE>::emergency_write_str("Thread: <none/invalid>\n");
-        }
-
-        Uart::<UART0_BASE>::emergency_write_str("==================\n\n");
-    }
-
-    // Halt - no recovery possible
-    loop {
-        core::hint::spin_loop();
+        report_fault(
+            "\n=== DATA ABORT ===\n",
+            "==================\n\n",
+            pc,
+            &[
+                ("Fault Address: 0x", dfar),
+                ("Fault Status:  0x", dfsr),
+                ("Fault Type:    0x", status),
+            ],
+        )
     }
 }
 
@@ -174,61 +242,23 @@ pub extern "C" fn data_abort_handler(pc: u32) -> ! {
 ///
 /// # Parameters
 /// - `pc`: Faulting instruction address (LR - 4, adjusted by assembly)
-///
-/// # Safety
-/// This is an exception handler called directly from the vector table.
-/// Must never return.
 #[no_mangle]
 pub extern "C" fn prefetch_abort_handler(pc: u32) -> ! {
     let ifar = read_ifar();
     let ifsr = read_ifsr();
-
-    // Decode fault status
-    let status = (ifsr & 0xF) | ((ifsr & 0x400) >> 6);
-
-    let thread = unsafe { threadx_sys::_tx_thread_identify() };
+    let status = decode_fault_status(ifsr);
 
     unsafe {
-        use crate::pl011_uart::Uart;
-
-        Uart::<UART0_BASE>::emergency_write_str("\n=== PREFETCH ABORT ===\n");
-
-        let mut buf = [0u8; 64];
-        Uart::<UART0_BASE>::emergency_write_str(format_hex(&mut buf, "PC:            0x", pc));
-        Uart::<UART0_BASE>::emergency_write_str(format_hex(&mut buf, "Fault Address: 0x", ifar));
-        Uart::<UART0_BASE>::emergency_write_str(format_hex(&mut buf, "Fault Status:  0x", ifsr));
-        Uart::<UART0_BASE>::emergency_write_str(format_hex(&mut buf, " (type=0x", status));
-
-        // Safety checks for thread pointer
-        if !thread.is_null()
-            && (thread as usize) >= RAM_START
-            && (thread as usize) < RAM_END
-            && (thread as usize & 0x3) == 0
-        {
-            let name_ptr = (*thread).tx_thread_name;
-            if !name_ptr.is_null()
-                && (name_ptr as usize) >= RAM_START
-                && (name_ptr as usize) < RAM_END
-            {
-                Uart::<UART0_BASE>::emergency_write_str("Thread: ");
-                let name_bytes = core::slice::from_raw_parts(
-                    name_ptr as *const u8,
-                    c_strlen_safe(name_ptr as *const u8, 32),
-                );
-                if let Ok(s) = core::str::from_utf8(name_bytes) {
-                    Uart::<UART0_BASE>::emergency_write_str(s);
-                    Uart::<UART0_BASE>::emergency_write_str("\n");
-                }
-            }
-        } else {
-            Uart::<UART0_BASE>::emergency_write_str("Thread: <none/invalid>\n");
-        }
-
-        Uart::<UART0_BASE>::emergency_write_str("======================\n\n");
-    }
-
-    loop {
-        core::hint::spin_loop();
+        report_fault(
+            "\n=== PREFETCH ABORT ===\n",
+            "======================\n\n",
+            pc,
+            &[
+                ("Fault Address: 0x", ifar),
+                ("Fault Status:  0x", ifsr),
+                ("Fault Type:    0x", status),
+            ],
+        )
     }
 }
 
@@ -239,51 +269,14 @@ pub extern "C" fn prefetch_abort_handler(pc: u32) -> ! {
 ///
 /// # Parameters
 /// - `pc`: Faulting instruction address (LR - 4, adjusted by assembly)
-///
-/// # Safety
-/// This is an exception handler called directly from the vector table.
-/// Must never return.
 #[no_mangle]
 pub extern "C" fn undefined_handler(pc: u32) -> ! {
-    let thread = unsafe { threadx_sys::_tx_thread_identify() };
-
     unsafe {
-        use crate::pl011_uart::Uart;
-
-        Uart::<UART0_BASE>::emergency_write_str("\n=== UNDEFINED INSTRUCTION ===\n");
-
-        let mut buf = [0u8; 64];
-        Uart::<UART0_BASE>::emergency_write_str(format_hex(&mut buf, "PC:            0x", pc));
-
-        // Safety checks for thread pointer
-        if !thread.is_null()
-            && (thread as usize) >= RAM_START
-            && (thread as usize) < RAM_END
-            && (thread as usize & 0x3) == 0
-        {
-            let name_ptr = (*thread).tx_thread_name;
-            if !name_ptr.is_null()
-                && (name_ptr as usize) >= RAM_START
-                && (name_ptr as usize) < RAM_END
-            {
-                Uart::<UART0_BASE>::emergency_write_str("Thread: ");
-                let name_bytes = core::slice::from_raw_parts(
-                    name_ptr as *const u8,
-                    c_strlen_safe(name_ptr as *const u8, 32),
-                );
-                if let Ok(s) = core::str::from_utf8(name_bytes) {
-                    Uart::<UART0_BASE>::emergency_write_str(s);
-                    Uart::<UART0_BASE>::emergency_write_str("\n");
-                }
-            }
-        } else {
-            Uart::<UART0_BASE>::emergency_write_str("Thread: <none/invalid>\n");
-        }
-
-        Uart::<UART0_BASE>::emergency_write_str("=============================\n\n");
-    }
-
-    loop {
-        core::hint::spin_loop();
+        report_fault(
+            "\n=== UNDEFINED INSTRUCTION ===\n",
+            "=============================\n\n",
+            pc,
+            &[],
+        )
     }
 }

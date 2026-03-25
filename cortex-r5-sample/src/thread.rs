@@ -203,7 +203,10 @@ impl<'stack> ThreadContext<'stack> {
 ///
 /// The lifetime parameter `'a` ties this handle to the `ThreadContext` it was
 /// created from, ensuring the handle cannot outlive the storage.
-#[derive(Clone, Copy)]
+/// Thread handles are deliberately `!Copy` and `!Clone` to prevent stale
+/// aliases after lifecycle operations (`delete`, `reset`). Only one handle
+/// should exist per thread to maintain the safety invariant that the
+/// control block pointer remains valid.
 pub struct Thread<'a> {
     /// Pointer to the thread control block (owned by ThreadContext)
     control_block: *mut TX_THREAD,
@@ -348,12 +351,10 @@ impl<'a> Thread<'a> {
             context.as_mut().get_unchecked_mut().created.set(true);
         }
 
-        // Return thread handle by value.
         // The lifetime 'a ties the handle to the ThreadContext, ensuring the handle
         // cannot outlive the storage. This is safe because:
         // 1. control_block_ptr remains valid for 'a (pinned in context)
-        // 2. Thread is Copy and just wraps a pointer
-        // 3. PhantomData ties the lifetime to prevent use-after-free
+        // 2. PhantomData ties the lifetime to prevent use-after-free
         Ok(Thread {
             control_block: control_block_ptr,
             _marker: PhantomData,
@@ -521,6 +522,5 @@ unsafe impl<'a> Send for Thread<'a> {}
 
 // Thread handles can be shared between threads because:
 // 1. ThreadX APIs (suspend, resume, etc.) are thread-safe (disable interrupts internally)
-// 2. Thread is Copy, so users can make independent handles anyway
-// 3. The ThreadX control block is managed by ThreadX, not Rust
+// 2. The ThreadX control block is managed by ThreadX, not Rust
 unsafe impl<'a> Sync for Thread<'a> {}

@@ -33,7 +33,7 @@ pub const TX_TRACE_USER_EVENTS: u32 = 2147483648;
 pub type CHAR = ::core::ffi::c_char;
 pub type UCHAR = ::core::ffi::c_uchar;
 pub type UINT = ::core::ffi::c_uint;
-pub type ULONG = ::core::ffi::c_ulong;
+pub type ULONG = u32;
 extern "C" {
     pub fn _tx_thread_interrupt_disable() -> ::core::ffi::c_uint;
 }
@@ -51,6 +51,7 @@ pub struct TX_TIMER_INTERNAL_STRUCT {
     pub tx_timer_internal_active_previous: *mut TX_TIMER_INTERNAL_STRUCT,
     pub tx_timer_internal_list_head: *mut *mut TX_TIMER_INTERNAL_STRUCT,
 }
+#[cfg(all(test, target_pointer_width = "32"))]
 #[test]
 fn bindgen_test_layout_TX_TIMER_INTERNAL_STRUCT() {
     const UNINIT: ::core::mem::MaybeUninit<TX_TIMER_INTERNAL_STRUCT> =
@@ -162,6 +163,7 @@ pub struct TX_TIMER_STRUCT {
     pub tx_timer_created_next: *mut TX_TIMER_STRUCT,
     pub tx_timer_created_previous: *mut TX_TIMER_STRUCT,
 }
+#[cfg(all(test, target_pointer_width = "32"))]
 #[test]
 fn bindgen_test_layout_TX_TIMER_STRUCT() {
     const UNINIT: ::core::mem::MaybeUninit<TX_TIMER_STRUCT> = ::core::mem::MaybeUninit::uninit();
@@ -276,6 +278,7 @@ pub struct TX_THREAD_STRUCT {
     >,
     pub tx_thread_suspension_sequence: ULONG,
 }
+#[cfg(all(test, target_pointer_width = "32"))]
 #[test]
 fn bindgen_test_layout_TX_THREAD_STRUCT() {
     const UNINIT: ::core::mem::MaybeUninit<TX_THREAD_STRUCT> = ::core::mem::MaybeUninit::uninit();
@@ -716,6 +719,7 @@ pub struct TX_BLOCK_POOL_STRUCT {
     pub tx_block_pool_created_next: *mut TX_BLOCK_POOL_STRUCT,
     pub tx_block_pool_created_previous: *mut TX_BLOCK_POOL_STRUCT,
 }
+#[cfg(all(test, target_pointer_width = "32"))]
 #[test]
 fn bindgen_test_layout_TX_BLOCK_POOL_STRUCT() {
     const UNINIT: ::core::mem::MaybeUninit<TX_BLOCK_POOL_STRUCT> =
@@ -878,6 +882,7 @@ pub struct TX_BYTE_POOL_STRUCT {
     pub tx_byte_pool_created_next: *mut TX_BYTE_POOL_STRUCT,
     pub tx_byte_pool_created_previous: *mut TX_BYTE_POOL_STRUCT,
 }
+#[cfg(all(test, target_pointer_width = "32"))]
 #[test]
 fn bindgen_test_layout_TX_BYTE_POOL_STRUCT() {
     const UNINIT: ::core::mem::MaybeUninit<TX_BYTE_POOL_STRUCT> =
@@ -1046,6 +1051,7 @@ pub struct TX_EVENT_FLAGS_GROUP_STRUCT {
     pub tx_event_flags_group_set_notify:
         ::core::option::Option<unsafe extern "C" fn(group_ptr: *mut TX_EVENT_FLAGS_GROUP_STRUCT)>,
 }
+#[cfg(all(test, target_pointer_width = "32"))]
 #[test]
 fn bindgen_test_layout_TX_EVENT_FLAGS_GROUP_STRUCT() {
     const UNINIT: ::core::mem::MaybeUninit<TX_EVENT_FLAGS_GROUP_STRUCT> =
@@ -1199,6 +1205,7 @@ pub struct TX_MUTEX_STRUCT {
     pub tx_mutex_owned_next: *mut TX_MUTEX_STRUCT,
     pub tx_mutex_owned_previous: *mut TX_MUTEX_STRUCT,
 }
+#[cfg(all(test, target_pointer_width = "32"))]
 #[test]
 fn bindgen_test_layout_TX_MUTEX_STRUCT() {
     const UNINIT: ::core::mem::MaybeUninit<TX_MUTEX_STRUCT> = ::core::mem::MaybeUninit::uninit();
@@ -1367,6 +1374,7 @@ pub struct TX_QUEUE_STRUCT {
     pub tx_queue_send_notify:
         ::core::option::Option<unsafe extern "C" fn(queue_ptr: *mut TX_QUEUE_STRUCT)>,
 }
+#[cfg(all(test, target_pointer_width = "32"))]
 #[test]
 fn bindgen_test_layout_TX_QUEUE_STRUCT() {
     const UNINIT: ::core::mem::MaybeUninit<TX_QUEUE_STRUCT> = ::core::mem::MaybeUninit::uninit();
@@ -1546,6 +1554,7 @@ pub struct TX_SEMAPHORE_STRUCT {
     pub tx_semaphore_put_notify:
         ::core::option::Option<unsafe extern "C" fn(semaphore_ptr: *mut TX_SEMAPHORE_STRUCT)>,
 }
+#[cfg(all(test, target_pointer_width = "32"))]
 #[test]
 fn bindgen_test_layout_TX_SEMAPHORE_STRUCT() {
     const UNINIT: ::core::mem::MaybeUninit<TX_SEMAPHORE_STRUCT> =

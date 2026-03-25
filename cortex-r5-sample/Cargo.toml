@@ -19,11 +19,14 @@ path = "src/main.rs"
 required-features = ["embedded"]
 
 [features]
-default = ["embedded"]
+default = ["embedded", "versatileab"]
 # Enable this feature for running compile-fail tests on host
 host-test = []
 # Enable this feature for building the embedded binary (mutually exclusive with host-test)
 embedded = []
+# Board selection (mutually exclusive)
+versatileab = []  # QEMU VersatileAB (default): PL011 UART, SP804 Timer, PL190 VIC
+zynqmp = []       # Zynq UltraScale+ RPU: Cadence UART, TTC Timer, GIC
 
 [dependencies]
 static_cell = "2.1.0"
@@ -35,6 +38,7 @@ ufmt = "0.2"
 
 [build-dependencies]
 cc = "1.2.1"
+
 
 [dev-dependencies]
 trybuild = "1.0"

@@ -20,15 +20,25 @@ MEMORY {
 ENTRY(_start)
 
 SECTIONS {
-    /* Exception vectors and early startup in ITCM for deterministic fetch */
-    .startup ORIGIN(ITCM) : {
-        *(.text.startup)
+    /* Exception vectors at 0x0 for deterministic fetch (low vectors, SCTLR.V=0) */
+    .vectors ORIGIN(ITCM) : {
+        KEEP(*(.vectors))
+    } > ITCM
+
+    /* Startup code immediately after vectors */
+    .startup : {
+        KEEP(*(.text.startup))
     } > ITCM
 
     .text : { *(.text .text*) } > RAM
     .rodata : { *(.rodata .rodata*) } > RAM
     .data : { *(.data .data*) } > RAM
-    .bss : { *(.bss .bss* COMMON) } > RAM
+    .bss : ALIGN(4) {
+        _bss_start = .;
+        *(.bss .bss* COMMON)
+        . = ALIGN(4);
+        _bss_end = .;
+    } > RAM
     /DISCARD/ : {
         *(.note .note*)
     }

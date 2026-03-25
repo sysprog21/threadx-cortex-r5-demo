@@ -491,13 +491,16 @@ impl Thread {
 
 /// Sleep the current thread for the specified number of ticks.
 ///
-/// # Safety
-///
-/// Must be called from a thread context (not ISR or initialization).
+/// Returns `Ok(())` on success, or `Err(status)` if called from an
+/// invalid context (ISR, initialization, timer thread, or while
+/// preemption is disabled -- ThreadX returns `TX_CALLER_ERROR`).
 #[inline]
-pub fn sleep(ticks: ULONG) {
-    unsafe {
-        tx_ffi::_tx_thread_sleep(ticks);
+pub fn sleep(ticks: ULONG) -> Result<(), UINT> {
+    let result = unsafe { tx_ffi::_tx_thread_sleep(ticks) };
+    if result == tx_ffi::TX_SUCCESS {
+        Ok(())
+    } else {
+        Err(result)
     }
 }
 

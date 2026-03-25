@@ -7,11 +7,21 @@
 #![no_std]
 #![no_main]
 
+// Board-specific imports
+#[cfg(all(feature = "versatileab", not(feature = "zynqmp")))]
 use cortex_r5_sample::{
     config::{TIMER0_IRQ, UART0_BASE, UART0_IRQ, VIC_BASE},
     pl011_uart::Uart,
     pl190_vic,
     sp804_timer::{self, Timer0},
+};
+
+#[cfg(feature = "zynqmp")]
+use cortex_r5_sample::{
+    cadence_ttc::Ttc,
+    cadence_uart::CadenceUart,
+    config_zynqmp::{GIC_CPU_TARGET, TTC0_BASE, TTC0_TMR0_IRQ, UART0_BASE, UART0_IRQ},
+    gic::Gic,
 };
 use static_cell::StaticCell;
 
@@ -291,6 +301,32 @@ extern "C" fn tx_application_define(_first_unused_memory: *mut core::ffi::c_void
         thread1 as *const _ as usize
     );
 
+    // ZynqMP: Start TTC timer AFTER ThreadX is initialized
+    //
+    // The timer must start here, not in kmain(), because _tx_timer_interrupt()
+    // requires _tx_thread_system_state to be initialized by ThreadX first.
+    // Calling it before the scheduler is ready corrupts system state.
+    #[cfg(feature = "zynqmp")]
+    {
+        use cortex_r5_sample::cadence_ttc::{Channel, Mode, Ttc};
+        let mut ttc0 = unsafe { Ttc::<TTC0_BASE>::new_ttc0(Channel::Channel0) };
+
+        // Configure TTC0 for ThreadX tick (100 Hz = 10ms tick)
+        // ZynqMP TTC runs at 100 MHz by default
+        // With prescaler 2^10 = 1024, we get ~97.6 kHz
+        // Interval of 976 gives ~100 Hz tick
+        ttc0.set_prescaler(9); // 2^(9+1) = 1024 prescaler
+        ttc0.init(976, Mode::Interval, true);
+        ttc0.start();
+        // Ensure MMIO write to CNT_CTRL is visible to the TTC peripheral
+        // before the scheduler starts, so the first tick arrives on time.
+        unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)) };
+
+        unsafe {
+            CadenceUart::<UART0_BASE>::emergency_write_str("TTC0 timer started\r\n");
+        }
+    }
+
     // Deterministic marker for smoke test validation.
     // This indicates all threads have been created and the scheduler is about to start.
     // The xtask smoke test monitors for this marker to validate successful boot.
@@ -318,6 +354,7 @@ extern "C" fn my_thread(role: u32) {
     unsafe {
         threadx_sys::_tx_thread_sleep(10);
     }
+
     println_uart!("TICK_OK: resumed after sleep");
 
     // Load shared primitive pointers
@@ -415,6 +452,7 @@ extern "C" fn my_thread(role: u32) {
         if res != threadx_sys::TX_SUCCESS {
             panic!("producer mutex get failed");
         }
+
         println_uart!("MTX_HELD");
 
         // Signal consumer that mutex is held (consumer will try to acquire and block)
@@ -559,9 +597,10 @@ extern "C" fn my_thread(role: u32) {
     }
 }
 
-/// Entry point for the Rust application.
+/// Entry point for the Rust application (VersatileAB).
 ///
 /// This is invoked by the startup code in 'startup.rs'.
+#[cfg(all(feature = "versatileab", not(feature = "zynqmp")))]
 #[no_mangle]
 pub extern "C" fn kmain() {
     // Check if this is a re-entry (system reset)
@@ -616,31 +655,133 @@ pub extern "C" fn kmain() {
     panic!("Kernel exited");
 }
 
-/// Called from the main interrupt handler
+/// Entry point for the Rust application (ZynqMP).
+///
+/// This is invoked by the startup code in 'startup.rs'.
+#[cfg(feature = "zynqmp")]
+#[no_mangle]
+pub extern "C" fn kmain() {
+    // Check if this is a re-entry (system reset)
+    static KMAIN_ENTRY_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    let entry_count = KMAIN_ENTRY_COUNT.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+
+    // Initialize UART hardware (new_uart0 calls init internally)
+    let mut uart0 = unsafe { CadenceUart::<UART0_BASE>::new_uart0() };
+    let _ = ufmt::uwriteln!(
+        uart0,
+        "Running ThreadX on ZynqMP... (entry #{})",
+        entry_count
+    );
+
+    // Initialize buffered UART system (interrupt-driven logging)
+    unsafe {
+        cortex_r5_sample::buffered_uart::init();
+    }
+
+    // Initialize GIC
+    let mut gic = unsafe { Gic::new() };
+
+    // Enable UART0 interrupt for buffered TX
+    gic.set_priority(UART0_IRQ, 0x90); // Lower priority than timer
+    gic.set_target(UART0_IRQ, GIC_CPU_TARGET);
+    gic.enable_interrupt(UART0_IRQ);
+
+    // NOTE: Timer is started in tx_application_define() AFTER ThreadX is initialized.
+    // Starting it here would call _tx_timer_interrupt() before the scheduler is ready,
+    // corrupting system state.
+
+    // Enable TTC0 timer interrupt
+    gic.set_priority(TTC0_TMR0_IRQ, 0x80);
+    gic.set_target(TTC0_TMR0_IRQ, GIC_CPU_TARGET);
+    gic.enable_interrupt(TTC0_TMR0_IRQ);
+
+    let _ = ufmt::uwriteln!(uart0, "GIC initialized, TTC0 IRQ {} enabled", TTC0_TMR0_IRQ);
+
+    unsafe {
+        threadx_sys::_tx_initialize_kernel_enter();
+    }
+
+    panic!("Kernel exited");
+}
+
+/// Called from the main interrupt handler (VersatileAB)
+#[cfg(all(feature = "versatileab", not(feature = "zynqmp")))]
 #[no_mangle]
 unsafe extern "C" fn handle_interrupt() {
     extern "C" {
         fn _tx_timer_interrupt();
     }
 
-    // Check for Timer0 interrupt
     if Timer0::is_pending() {
-        unsafe {
-            _tx_timer_interrupt();
-        }
+        _tx_timer_interrupt();
         Timer0::clear_interrupt();
     }
 
-    // Check for UART TX interrupt on VIC
-    // Note: We check the VIC status register to determine which interrupt fired
-    let vic_status = unsafe {
-        let vic_base = VIC_BASE as *const u32;
-        vic_base.read_volatile()
-    };
-
+    let vic_status = (VIC_BASE as *const u32).read_volatile();
     if (vic_status & (1 << UART0_IRQ)) != 0 {
         cortex_r5_sample::buffered_uart::handle_tx_interrupt();
     }
+}
+
+/// Called from the main interrupt handler (ZynqMP with deferred EOI).
+///
+/// The GIC acknowledge (GICC_IAR read) happens in assembly at IRQ entry.
+/// The EOI (GICC_EOIR write) happens in assembly in context_restore AFTER CPSID.
+/// This Rust handler only dispatches based on IRQ ID and clears peripheral sources.
+#[cfg(feature = "zynqmp")]
+#[no_mangle]
+unsafe extern "C" fn handle_interrupt() {
+    extern "C" {
+        fn _tx_timer_interrupt();
+    }
+
+    // Get IRQ ID from assembly-stored IAR (acknowledge already done).
+    // SAFETY: Called from IRQ handler context, single-core, no IRQ nesting.
+    let irq = Gic::current_irq_id();
+
+    // Debug output removed for cleaner test
+
+    match irq {
+        TTC0_TMR0_IRQ => {
+            // Clear TTC interrupt source BEFORE calling ThreadX timer handler.
+            // For level-triggered interrupts, the peripheral source must be
+            // deasserted before EOI, otherwise the GIC re-latches pending.
+            // Uses static method to avoid aliasing the Ttc instance in tx_application_define.
+            let _ = Ttc::<TTC0_BASE>::clear_interrupt_static(
+                cortex_r5_sample::cadence_ttc::Channel::Channel0,
+            );
+            core::arch::asm!("dsb sy");
+
+            _tx_timer_interrupt();
+        }
+        UART0_IRQ => {
+            // Handle UART interrupt
+            cortex_r5_sample::buffered_uart::handle_tx_interrupt();
+        }
+        _ => {
+            // Unknown IRQ: disable it at the GIC to prevent interrupt storm
+            // from level-triggered sources. EOI is handled by assembly regardless.
+            use cortex_r5_sample::gic::Gic;
+            if irq <= 1019 {
+                Gic::clear_pending_static(irq);
+            }
+        }
+    }
+
+    // NO Gic::end_of_interrupt() call here!
+    // EOI is handled by assembly in tx_thread_context_restore.S
+    // (TX_GIC_DEFERRED_EOI) after CPSID, preventing the race condition.
+}
+
+/// Board-specific emergency write to UART.
+#[cfg(all(feature = "versatileab", not(feature = "zynqmp")))]
+unsafe fn emergency_write(s: &str) {
+    Uart::<UART0_BASE>::emergency_write_str(s);
+}
+
+#[cfg(feature = "zynqmp")]
+unsafe fn emergency_write(s: &str) {
+    CadenceUart::<UART0_BASE>::emergency_write_str(s);
 }
 
 /// Handles unrecoverable `panic!` calls in the application.
@@ -652,7 +793,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     /// Write a u32 as decimal digits via emergency UART (no core::fmt).
     unsafe fn emergency_write_u32(n: u32) {
         if n == 0 {
-            Uart::<UART0_BASE>::emergency_write_str("0");
+            emergency_write("0");
             return;
         }
         let mut buf = [0u8; 10];
@@ -663,25 +804,25 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
             buf[pos] = b'0' + (val % 10) as u8;
             val /= 10;
         }
-        Uart::<UART0_BASE>::emergency_write_str(core::str::from_utf8_unchecked(&buf[pos..]));
+        emergency_write(core::str::from_utf8_unchecked(&buf[pos..]));
     }
 
     unsafe {
-        Uart::<UART0_BASE>::emergency_write_str("\r\nPANIC: ");
+        emergency_write("\r\nPANIC: ");
 
         if let Some(loc) = info.location() {
-            Uart::<UART0_BASE>::emergency_write_str(loc.file());
-            Uart::<UART0_BASE>::emergency_write_str(":");
+            emergency_write(loc.file());
+            emergency_write(":");
             emergency_write_u32(loc.line());
         }
 
         // All panics use static strings, so as_str() returns Some
         if let Some(msg) = info.message().as_str() {
-            Uart::<UART0_BASE>::emergency_write_str(": ");
-            Uart::<UART0_BASE>::emergency_write_str(msg);
+            emergency_write(": ");
+            emergency_write(msg);
         }
 
-        Uart::<UART0_BASE>::emergency_write_str("\r\n");
+        emergency_write("\r\n");
     }
 
     const SYS_REPORTEXC: u32 = 0x18;

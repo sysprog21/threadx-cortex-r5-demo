@@ -1,6 +1,6 @@
 //! Build script for the Rust and ThreadX demonstration.
 
-use std::{env, error::Error, fs, path::PathBuf};
+use std::{env, error::Error, path::PathBuf};
 
 static TX_PORT_FILES: &[&str] = &[
     "tx_thread_context_restore.S",
@@ -101,7 +101,6 @@ static TX_COMMON_FILES: &[&str] = &[
 ];
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let out_dir = PathBuf::from(env::var("OUT_DIR")?);
     let crate_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
 
     // Skip ThreadX compilation when host-test feature is enabled.
@@ -111,17 +110,59 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    // Include the memory layout (linker script) in the linker's search path.
-    fs::copy("linker.ld", out_dir.join("linker.ld"))?;
-    println!("cargo:rustc-link-search={}", out_dir.display());
+    let has_versatileab = env::var("CARGO_FEATURE_VERSATILEAB").is_ok();
+    let is_zynqmp = env::var("CARGO_FEATURE_ZYNQMP").is_ok();
+
+    if has_versatileab == is_zynqmp {
+        panic!(
+            "Select exactly one board feature: `versatileab` or `zynqmp`. \
+             For ZynqMP use `--no-default-features --features embedded,zynqmp`."
+        );
+    }
+
+    // ZynqMP RPU Configuration Constraints (Lockstep Mode Only)
+    //
+    // This implementation targets Cortex-R5 in LOCKSTEP mode exclusively.
+    // In lockstep, both R5 cores execute identical instructions in parallel
+    // for redundancy - they appear as a single logical CPU to software.
+    // Split mode (dual independent R5 cores) is NOT supported.
+    //
+    // Rationale:
+    // - Global `_tx_gic_iar` variable assumes single-core execution
+    // - Deferred EOI pattern has no per-core state tracking
+    // - Critical section uses interrupt disable (not spinlocks)
+
+    if is_zynqmp && env::var("CARGO_FEATURE_TX_ENABLE_IRQ_NESTING").is_ok() {
+        panic!("ZynqMP: IRQ nesting requires per-nesting-level IAR storage - not implemented");
+    }
+    if is_zynqmp && env::var("CARGO_FEATURE_SMP").is_ok() {
+        panic!("ZynqMP: SMP not supported - this implementation targets lockstep mode only");
+    }
+
+    // Select linker script based on board feature.
+    // Pass it directly via rustc-link-arg to avoid search-order ambiguity
+    // (the crate root contains linker.ld for VersatileAB, which the linker
+    // would find before any OUT_DIR copy).
+    let linker_script = if is_zynqmp {
+        crate_dir.join("linker_zynqmp.ld")
+    } else {
+        crate_dir.join("linker.ld")
+    };
+    println!("cargo:rustc-link-arg=-T{}", linker_script.display());
     println!("cargo:rerun-if-changed=linker.ld");
+    println!("cargo:rerun-if-changed=linker_zynqmp.ld");
 
     // Build ThreadX as static library
     let tx_common_dir = crate_dir.join("../threadx/common/src");
     let tx_common_inc = crate_dir.join("../threadx/common/inc");
     let tx_port_dir = crate_dir.join("../threadx/ports/cortex_r5/gnu/src");
     let tx_port_inc = crate_dir.join("../threadx/ports/cortex_r5/gnu/inc");
-    cc::Build::new()
+
+    // All port files used for both platforms (upstream ThreadX supports GIC deferred EOI)
+    let port_files: Vec<_> = TX_PORT_FILES.iter().map(|&s| tx_port_dir.join(s)).collect();
+
+    let mut threadx_build = cc::Build::new();
+    threadx_build
         .include(&tx_common_inc)
         .include(&tx_port_inc)
         .flag("-g")
@@ -135,11 +176,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         .define("TX_DISABLE_ERROR_CHECKING", "1")
         .define("TX_DISABLE_REDUNDANT_CLEARING", "1")
         .define("TX_ENABLE_VFP_SUPPORT", "1")
-        .files(TX_PORT_FILES.iter().map(|&s| tx_port_dir.join(s)))
-        .files(TX_COMMON_FILES.iter().map(|&s| tx_common_dir.join(s)))
-        .compile("threadx");
+        .files(&port_files)
+        .files(TX_COMMON_FILES.iter().map(|&s| tx_common_dir.join(s)));
 
-    cc::Build::new()
+    // Enable GIC deferred EOI for ZynqMP (upstream ThreadX feature)
+    if is_zynqmp {
+        threadx_build.define("TX_GIC_DEFERRED_EOI", "1");
+        // ZynqMP GIC CPU interface is at 0xF902_0000 (not default 0xF9001000)
+        threadx_build.define("TX_GIC_CPU_INTERFACE_BASE", "0xF9020000");
+    }
+
+    threadx_build.compile("threadx");
+
+    // Build startup code
+    let mut startup_build = cc::Build::new();
+    startup_build
         .include(&tx_common_inc)
         .include(&tx_port_inc)
         .flag("-g")
@@ -147,8 +198,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         .flag("-fdata-sections")
         .flag("-fno-unwind-tables")
         .flag("-fno-asynchronous-unwind-tables")
-        .file("src/tx_initialize_low_level.S")
-        .compile("startup");
+        .file("src/tx_initialize_low_level.S");
+
+    // Define ZYNQMP for assembly conditional compilation
+    if is_zynqmp {
+        startup_build.define("ZYNQMP", "1");
+    }
+
+    startup_build.compile("startup");
 
     Ok(())
 }
